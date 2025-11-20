@@ -1,0 +1,38 @@
+[app]
+host = "0.0.0.0"
+port = 8000
+debug = false
+
+[database]
+host = "localhost"
+port = 5432
+database = "proxy_db"
+user = "postgres"
+password = "your_password"
+min_pool_size = 5
+max_pool_size = 20
+
+[scheduler]
+# 定时任务间隔（秒）
+crawl_interval = 3600      # 1小时
+validate_interval = 300     # 5分钟
+cleanup_interval = 7200     # 2小时
+
+[validator]
+timeout = 10
+test_urls = [
+    "http://httpbin.org/ip",
+    "http://ip-api.com/json",
+    "https://api.ipify.org?format=json"
+]
+max_fail_count = 3
+
+[concurrency]
+max_spiders = 5
+max_validators = 50
+
+[proxy]
+# 代理质量评分权重
+weight_success_rate = 0.4
+weight_speed = 0.3
+weight_stability = 0.3
