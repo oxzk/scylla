@@ -1,10 +1,3 @@
-from models.proxy import (
-    ProxyModel,
-    ProxyData,
-    ProxyProtocol,
-    ProxyAnonymity,
-    ProxyStatus,
-    CREATE_PROXY_TABLE
-)
+from models.proxy import Proxy, ProxyAnonymity, ProxyStatus
 
-__all__ = ["ProxyModel", "ProxyData", "ProxyProtocol", "ProxyAnonymity", "ProxyStatus", "CREATE_PROXY_TABLE"]
+__all__ = ["Proxy", "ProxyAnonymity", "ProxyStatus"]

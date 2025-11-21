@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from models import ProxyData, ProxyProtocol
+from models import Proxy
 from pydantic import ValidationError
 from aiohttp import ClientSession, ClientResponse
 from bs4 import BeautifulSoup
@@ -9,74 +9,93 @@ import logging
 
 
 class BaseSpider(ABC):
-    """爬虫基类"""
+    """Base class for all proxy spiders
+
+    Attributes:
+        status: Whether the spider is enabled (default: False)
+        name: Spider name, defaults to class name without 'Spider' suffix
+    """
+
+    status: bool = False
+    name: Optional[str] = None
 
     def __init__(
         self,
-        name: Optional[str] = None,
         request_session: Optional[ClientSession] = None,
     ):
-        self.name = name or self.__class__.__name__
+        """Initialize the spider
+
+        Args:
+            request_session: Optional existing aiohttp ClientSession to reuse
+        """
+        if not self.name:
+            self.name = self.__class__.__name__.replace("Spider", "")
         self.session = request_session
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0"
         self.logger = logging.getLogger("sanic.access")
 
     @property
     def current_request_session(self) -> ClientSession:
+        """Get or create HTTP session (lazy initialization)"""
         if self.session is None:
             self.session = ClientSession()
         return self.session
 
     async def close_session(self):
-        """关闭HTTP会话"""
+        """Close HTTP session and cleanup resources"""
         if self.session:
             await self.session.close()
             self.session = None
 
     @abstractmethod
-    async def fetch_proxies(self) -> List[ProxyData]:
-        """
-        抓取代理列表
-        返回格式: List[ProxyData]
+    async def fetch_proxies(self) -> List[Proxy]:
+        """Fetch proxy list from the source
+
+        This method must be implemented by all spider subclasses.
+
+        Returns:
+            List of Proxy objects
         """
         pass
 
     def create_proxy_data(
-        self, ip: str, port: int, protocol: str, **kwargs
-    ) -> ProxyData:
+        self, ip: str, port: int, protocol: str, country: Optional[str] = None, **kwargs
+    ) -> Optional[Proxy]:
+        """Create a Proxy object with validation
+
+        Args:
+            ip: IP address
+            port: Port number
+            protocol: Protocol type (http, https, socks4, socks5)
+            country: Country code (ISO 3166-1 alpha-2, e.g., 'US', 'CN')
+            **kwargs: Additional proxy attributes (anonymity, speed, etc.)
+
+        Returns:
+            Proxy object if validation succeeds, None otherwise
+        """
         try:
-            return ProxyData(
+            return Proxy(
                 ip=ip,
                 port=port,
-                protocol=ProxyProtocol(protocol.lower()),
+                protocol=protocol,
+                country=country,
                 source=self.name,
                 **kwargs,
             )
         except (ValidationError, ValueError) as e:
-            self.logger.error(f"[{self.name}] 创建代理数据失败: {e}")
+            self.logger.warning(
+                f"[{self.name}] Proxy validation failed: {protocol}://{ip}:{port} {country} - {e}"
+            )
             return None
 
-    async def run(self):
-        """运行爬虫"""
+    async def run(self) -> List[Proxy]:
+        """Execute the spider and fetch proxies
+
+        Returns:
+            List of successfully fetched and validated Proxy objects
+        """
         try:
-            proxies = await self.fetch_proxies()
-
-            # 保存到数据库
-            saved_count = 0
-            for proxy in proxies:
-                self.logger.info(f"[{self.name}] 代理 {proxy.ip}:{proxy.port} 已获取")
-                try:
-                    # await db.insert_proxy(proxy)
-                    saved_count += 1
-                except Exception as e:
-                    self.logger.error(
-                        f"[{self.name}] 保存代理失败 {proxy.ip}:{proxy.port} - {e}"
-                    )
-
-            return saved_count
-        except Exception as e:
-            self.logger.error(f"[{self.name}] 爬取失败1: {e}", exc_info=True)
-            return 0
+            return await self.fetch_proxies()
         finally:
             await self.close_session()
 
@@ -86,14 +105,26 @@ class BaseSpider(ABC):
         method: str = "GET",
         **request_kwargs,
     ) -> ClientResponse:
+        """Make an HTTP request with timeout control
 
+        Args:
+            url: Target URL
+            method: HTTP method (default: GET)
+            **request_kwargs: Additional arguments for aiohttp request
+
+        Returns:
+            aiohttp ClientResponse object
+
+        Raises:
+            asyncio.TimeoutError: If request exceeds timeout
+        """
         headers = request_kwargs.pop("headers", {})
         headers.setdefault("user-agent", self.user_agent)
 
-        timeout = int(request_kwargs.pop("timeout", 15))
+        timeout = request_kwargs.pop("timeout", 20)
 
-        request_kwargs.setdefault("headers", headers)
-        request_kwargs.setdefault("timeout", timeout)
+        request_kwargs["headers"] = headers
+        request_kwargs["timeout"] = timeout
         request_kwargs.setdefault("verify_ssl", False)
 
         return await asyncio.wait_for(
@@ -101,7 +132,16 @@ class BaseSpider(ABC):
             timeout=timeout,
         )
 
-    async def get_html(self, url: str, **request_kwargs) -> BeautifulSoup:
+    async def get_document(self, url: str, **request_kwargs) -> BeautifulSoup:
+        """Fetch and parse HTML document
+
+        Args:
+            url: Target URL
+            **request_kwargs: Additional arguments for request method
+
+        Returns:
+            BeautifulSoup object for HTML parsing
+        """
         response = await self.request(url, **request_kwargs)
         html = await response.text()
         return BeautifulSoup(html, "html.parser")

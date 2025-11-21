@@ -1,7 +1,6 @@
 from sanic import Blueprint, response
 from sanic.request import Request
-from core.database import db
-from models import ProxyProtocol
+from models import Proxy
 from pydantic import ValidationError
 
 api_bp = Blueprint("api", url_prefix="/api")

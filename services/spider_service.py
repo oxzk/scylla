@@ -5,77 +5,149 @@ from pathlib import Path
 from typing import List, Optional
 from importlib import import_module
 from spiders.base import BaseSpider
+from models import Proxy
 from core.config import settings
-from sanic.log import access_logger as logger
+
+logger = logging.getLogger("sanic.access")
 
 
 class SpiderService:
+    """Service for managing and executing proxy spiders"""
 
     def __init__(self):
-        self.spiders: Optional[List[BaseSpider]] = None
+        self._spiders: Optional[List[BaseSpider]] = None
+
+    @property
+    def spiders(self) -> List[BaseSpider]:
+        """Lazy load spiders on first access"""
+        if self._spiders is None:
+            self._spiders = self._load_spiders()
+        return self._spiders
 
     def _load_spiders(self) -> List[BaseSpider]:
-        """动态加载所有爬虫类"""
+        """Dynamically load all spider classes from the spiders directory"""
         spiders = []
         spiders_dir = Path(__file__).parent.parent / "spiders"
 
-        for path in spiders_dir.glob("**/*.py"):
-            # 跳过 __init__.py 文件
-            if path.name == "__init__.py":
+        if not spiders_dir.exists():
+            logger.warning(f"Spiders directory not found: {spiders_dir}")
+            return spiders
+
+        for path in spiders_dir.glob("*.py"):
+            if path.name.startswith("_"):
                 continue
 
-            rel_path = path.relative_to(spiders_dir.parent)
-            module_name = ".".join(rel_path.with_suffix("").parts)
+            module_name = f"spiders.{path.stem}"
 
-            # 动态导入模块
-            module = import_module(module_name)
+            try:
+                # Dynamically import module
+                module = import_module(module_name)
 
-            # 查找所有 BaseSpider 子类
-            for _, obj in inspect.getmembers(module, inspect.isclass):
-                if issubclass(obj, BaseSpider) and obj is not BaseSpider:
-                    spiders.append(obj())
+                # Find all BaseSpider subclasses defined in this module
+                for name, spider_class in inspect.getmembers(module, inspect.isclass):
+                    # Only load spiders defined in this module (not imported ones)
+                    if (
+                        issubclass(spider_class, BaseSpider)
+                        and spider_class is not BaseSpider
+                        and spider_class.__module__ == module_name
+                    ):
+                        try:
+                            spider_instance = spider_class()
+                            if spider_instance.status:
+                                spiders.append(spider_instance)
+                                logger.debug(f"Loaded spider: {spider_instance.name}")
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to instantiate spider {spider_class.__name__}: {e}"
+                            )
+
+            except Exception as e:
+                logger.error(f"Failed to load module {module_name}: {e}")
+                continue
+
+        logger.debug(f"Successfully loaded {len(spiders)} active spider(s)")
         return spiders
 
-    async def run_all(self):
-        """并发运行所有爬虫"""
-        if not self.spiders:
-            self.spiders = self._load_spiders()
-
-        for spider in self.spiders:
-            logger.info(f"启动爬虫: {spider.name}")
-            await spider.run()
-
-        # semaphore = asyncio.Semaphore(config.max_concurrent_spiders)
-
-        # async def run_with_semaphore(spider):
-        #     async with semaphore:
-        #         try:
-        #             logger.debug(f"启动爬虫: {spider.name}")
-        #             return await spider.run()
-        #         except Exception as e:
-        #             logger.error(f"爬虫运行异常: {spider.name} - {e}", exc_info=True)
-
-        # results = await asyncio.gather(
-        #     *[run_with_semaphore(spider) for spider in self.spiders],
-        #     return_exceptions=True,
-        # )
-
-        # total = sum(r for r in results if isinstance(r, int))
-        # errors = [r for r in results if isinstance(r, Exception)]
-
-        # if errors:
-        #     logger.warning(f"部分爬虫执行出错: {len(errors)}/{len(self.spiders)} 个")
-        #     for idx, error in enumerate(errors, 1):
-        #         logger.error(f"错误 {idx}: {type(error).__name__}: {error}")
-
-        # logger.info(f"所有爬虫运行完成，共保存 {total} 个有效代理")
-        # return total
-
-    async def run_spider(self, spider_name: str):
-        """运行指定爬虫"""
+    def get_spider_by_name(self, spider_name: str) -> Optional[BaseSpider]:
+        """Get a spider instance by name"""
         for spider in self.spiders:
             if spider.name == spider_name:
-                return await spider.run()
+                return spider
+        return None
+
+    async def _run_with_semaphore(
+        self, semaphore: asyncio.Semaphore, spider: BaseSpider
+    ) -> Optional[List[Proxy]]:
+        """Run a spider with semaphore control
+
+        Args:
+            semaphore: Semaphore for concurrency control
+            spider: Spider instance to run
+
+        Returns:
+            List of fetched proxies, or None if failed
+        """
+        async with semaphore:
+            try:
+                logger.info(f"[{spider.name}] Spider started")
+                proxies = await spider.run()
+                if proxies:
+                    logger.info(f"[{spider.name}] Fetched {len(proxies)} proxies")
+                else:
+                    logger.warning(f"[{spider.name}] No proxies fetched")
+                return proxies
+            except TimeoutError:
+                logger.warning(f"[{spider.name}] Request timeout - exceeded time limit")
+            except Exception as e:
+                logger.error(
+                    f"[{spider.name}] Spider execution failed: {e}",
+                    exc_info=True,
+                )
+            return None
+
+    async def run_all(self) -> List[Optional[List[Proxy]]]:
+        """Run all enabled spiders concurrently with semaphore control
+
+        Returns:
+            List of results from all spiders (each result is a list of proxies or None)
+        """
+        if not self.spiders:
+            logger.warning("No active spiders found")
+            return []
+
+        semaphore = asyncio.Semaphore(settings.max_concurrent_spiders)
+
+        return await asyncio.gather(
+            *[self._run_with_semaphore(semaphore, spider) for spider in self.spiders],
+            return_exceptions=True,
+        )
+
+    async def run_spider(self, spider_name: str) -> Optional[List[Proxy]]:
+        """Run a specific spider by name
+
+        Args:
+            spider_name: Name of the spider to run
+
+        Returns:
+            List of fetched proxies, or None if spider not found or failed
+        """
+        spider = self.get_spider_by_name(spider_name)
+        if spider is None:
+            logger.warning(f"Spider not found: {spider_name}")
+            return None
+
+        logger.info(f"[\033[34m{spider_name}\033[0m] Spider started")
+        try:
+            proxies = await spider.run()
+            if proxies:
+                logger.info(f"[{spider_name}] Fetched {len(proxies)} proxies")
+            else:
+                logger.warning(f"[{spider_name}] No proxies fetched")
+            return proxies
+        except TimeoutError:
+            logger.warning(f"[{spider_name}] Request timeout - exceeded time limit")
+        except Exception as e:
+            logger.error(f"[{spider_name}] Spider execution failed: {e}", exc_info=True)
         return None
 
 

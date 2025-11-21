@@ -1,7 +1,7 @@
 import asyncpg
 from typing import Optional, List
 from core.config import settings
-from models import CREATE_PROXY_TABLE, ProxyData, ProxyModel, ProxyProtocol
+from models import Proxy
 
 
 class Database:
@@ -11,18 +11,39 @@ class Database:
     async def connect(self):
         """创建数据库连接池"""
         self.pool = await asyncpg.create_pool(
-            host=settings.db_host,
-            port=settings.db_port,
-            user=settings.db_user,
-            password=settings.db_password,
-            database=settings.db_name,
-            min_size=settings.min_pool_size,
-            max_size=settings.max_pool_size,
+            settings.db_url,
+            min_size=settings.db_min_pool_size,
+            max_size=settings.db_max_pool_size,
         )
         await self.init_tables()
 
     async def init_tables(self):
-        """初始化数据库表"""
+        CREATE_PROXY_TABLE = """
+            CREATE TABLE IF NOT EXISTS proxies (
+                id SERIAL PRIMARY KEY,
+                ip VARCHAR(45) NOT NULL,
+                port INTEGER NOT NULL,
+                protocol VARCHAR(10) NOT NULL,
+                country VARCHAR(2),
+                anonymity VARCHAR(20),
+                source VARCHAR(100) NOT NULL,
+                speed FLOAT,
+                success_count INTEGER DEFAULT 0,
+                fail_count INTEGER DEFAULT 0,
+                status INTEGER DEFAULT 0,
+                last_checked TIMESTAMP,
+                last_success TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(ip, port, protocol)
+            );
+            CREATE INDEX IF NOT EXISTS idx_proxies_country ON proxies(country);
+            CREATE INDEX IF NOT EXISTS idx_proxies_protocol ON proxies(protocol);
+            CREATE INDEX IF NOT EXISTS idx_proxies_status ON proxies(status);
+            CREATE INDEX IF NOT EXISTS idx_proxies_fail_count ON proxies(fail_count);
+            CREATE INDEX IF NOT EXISTS idx_proxies_last_success ON proxies(last_success);
+            CREATE INDEX IF NOT EXISTS idx_proxies_quality ON proxies(success_count DESC, speed ASC);
+        """
         async with self.pool.acquire() as conn:
             await conn.execute(CREATE_PROXY_TABLE)
 
@@ -31,36 +52,40 @@ class Database:
         if self.pool:
             await self.pool.close()
 
-    async def insert_proxy(self, proxy_data: ProxyData):
+    async def execute(self, query: str, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.execute(query, *args)
+
+    async def fetch(self, query: str, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+
+    async def fetchrow(self, query: str, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+
+    async def fetchval(self, query: str, *args):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(query, *args)
+
+    async def insert_proxy(self, proxy_data: Proxy):
         """插入或更新代理"""
         query = """
-        INSERT INTO proxies (ip, port, protocol, country, anonymity, source, speed, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
-        ON CONFLICT (ip, port, protocol) 
-        DO UPDATE SET 
-            country = EXCLUDED.country,
-            anonymity = EXCLUDED.anonymity,
-            source = EXCLUDED.source,
-            status = 'active',
-            updated_at = NOW()
+        INSERT INTO proxies (ip, port, protocol, country, source, status)
+        VALUES ($1, $2, $3, $4, $5, 0)
+        ON CONFLICT (ip, port, protocol) DO NOTHING;
         """
         async with self.pool.acquire() as conn:
             await conn.execute(
                 query,
                 proxy_data.ip,
                 proxy_data.port,
-                (
-                    proxy_data.protocol.value
-                    if isinstance(proxy_data.protocol, ProxyProtocol)
-                    else proxy_data.protocol
-                ),
+                proxy_data.protocol,
                 proxy_data.country,
-                proxy_data.anonymity.value if proxy_data.anonymity else None,
                 proxy_data.source,
-                proxy_data.speed,
             )
 
-    async def get_proxies_for_validation(self, limit: int = 100) -> List[ProxyModel]:
+    async def get_proxies_for_validation(self, limit: int = 100) -> List[Proxy]:
         """获取需要验证的代理"""
         query = """
         SELECT *
@@ -121,7 +146,7 @@ class Database:
 
     async def get_available_proxies(
         self, protocol: str = None, country: str = None, limit: int = 10
-    ) -> List[ProxyModel]:
+    ) -> List[Proxy]:
         """获取可用代理"""
         conditions = [
             "fail_count < $1",
@@ -159,9 +184,9 @@ class Database:
             rows = await conn.fetch(query, *params)
             return [self._row_to_model(row) for row in rows]
 
-    def _row_to_model(self, row) -> ProxyModel:
-        """将数据库行转换为ProxyModel"""
-        return ProxyModel(
+    def _row_to_model(self, row) -> Proxy:
+        """将数据库行转换为Proxy"""
+        return Proxy(
             id=row["id"],
             ip=row["ip"],
             port=row["port"],
@@ -179,7 +204,7 @@ class Database:
             updated_at=row["updated_at"],
         )
 
-    async def get_proxy_by_id(self, proxy_id: int) -> Optional[ProxyModel]:
+    async def get_proxy_by_id(self, proxy_id: int) -> Optional[Proxy]:
         """根据ID获取代理"""
         query = "SELECT * FROM proxies WHERE id = $1"
         async with self.pool.acquire() as conn:
@@ -227,5 +252,4 @@ class Database:
             }
 
 
-# 全局数据库实例
 db = Database()

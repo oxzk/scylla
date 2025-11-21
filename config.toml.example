@@ -4,11 +4,7 @@ port = 8000
 debug = false
 
 [database]
-host = "localhost"
-port = 5432
-database = "proxy_db"
-user = "postgres"
-password = "your_password"
+db_url = "postgresql://neondb_owner:npg_RknFtlW1TzX2@ep-quiet-mouse-a1enpe79-pooler.ap-southeast-1.aws.neon.tech/scylla?sslmode=require&channel_binding=require"
 min_pool_size = 5
 max_pool_size = 20
 

@@ -2,59 +2,47 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
-from ipaddress import ip_address
-
-
-class ProxyProtocol(str, Enum):
-    """代理协议枚举"""
-
-    HTTP = "http"
-    HTTPS = "https"
-    SOCKS4 = "socks4"
-    SOCKS5 = "socks5"
+from ipaddress import ip_address as validate_ip_address
 
 
 class ProxyAnonymity(str, Enum):
-    """代理匿名级别"""
+    """Proxy anonymity levels"""
 
-    TRANSPARENT = "transparent"  # 透明代理
-    ANONYMOUS = "anonymous"  # 匿名代理
-    ELITE = "elite"  # 高匿代理
-
-
-class ProxyStatus(str, Enum):
-    """代理状态"""
-
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    CHECKING = "checking"
+    TRANSPARENT = "transparent"  # Transparent proxy
+    ANONYMOUS = "anonymous"  # Anonymous proxy
+    ELITE = "elite"  # Elite/High anonymity proxy
 
 
-class ProxyData(BaseModel):
-    """代理数据模型"""
+class ProxyStatus(int, Enum):
+    """Proxy status codes"""
 
+    ACTIVE = 1
+    INACTIVE = 2
+    CHECKING = 0
+
+
+class Proxy(BaseModel):
+    """Unified proxy model for both spider output and database storage
+
+    This model can be used in two ways:
+    1. Spider output: Only basic fields (ip, port, protocol, etc.) are required
+    2. Database storage: Additional fields (id, success_count, etc.) are populated
+
+    All database-specific fields are optional to support both use cases.
+    """
+
+    # Required fields (for spider output)
     ip: str
     port: int = Field(ge=1, le=65535)
-    protocol: ProxyProtocol
-    country: Optional[str] = Field(None, max_length=2)
-    anonymity: Optional[ProxyAnonymity] = None
+    protocol: str
     source: str
+
+    # Optional basic fields
+    country: Optional[str] = Field(None, max_length=2)
+    anonymity: Optional[str] = None
     speed: Optional[float] = None
 
-    @field_validator("ip")
-    def validate_ip(cls, v):
-        try:
-            return ip_address(v)  # 转换为 IPv4Address 或 IPv6Address
-        except ValueError:
-            raise ValueError("Invalid IP address")
-
-    class Config:
-        use_enum_values = True
-
-
-class ProxyModel(ProxyData):
-    """完整的代理模型（包含数据库字段）"""
-
+    # Optional database fields
     id: Optional[int] = None
     success_count: int = 0
     fail_count: int = 0
@@ -62,11 +50,46 @@ class ProxyModel(ProxyData):
     last_success: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    status: ProxyStatus = ProxyStatus.ACTIVE
+    status: ProxyStatus = ProxyStatus.CHECKING
+
+    @field_validator("ip")
+    @classmethod
+    def validate_ip(cls, v):
+        """Validate IP address format"""
+        try:
+            validate_ip_address(v)  # Validate but don't convert
+            return str(v)  # Return as string for database compatibility
+        except ValueError:
+            raise ValueError("Invalid IP address")
+
+    @field_validator("protocol", mode="before")
+    @classmethod
+    def normalize_protocol(cls, v):
+        """Normalize protocol to lowercase"""
+        return v.lower() if isinstance(v, str) else v
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def normalize_port(cls, v):
+        """Normalize port to integer"""
+        return int(v) if isinstance(v, str) else v
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def normalize_country(cls, v):
+        """Normalize country code to uppercase ISO 3166-1 alpha-2"""
+        if v is None:
+            return v
+        v = v.strip().upper()
+        if len(v) != 2:
+            raise ValueError(
+                f"Country code {v} must be 2 characters (ISO 3166-1 alpha-2)"
+            )
+        return v
 
     @property
     def success_rate(self) -> float:
-        """成功率"""
+        """Calculate success rate as a percentage (0.0 to 1.0)"""
         total = self.success_count + self.fail_count
         if total == 0:
             return 0.0
@@ -74,24 +97,28 @@ class ProxyModel(ProxyData):
 
     @property
     def url(self) -> str:
-        """代理URL"""
+        """Generate proxy URL in format: protocol://ip:port"""
         return f"{self.protocol}://{self.ip}:{self.port}"
 
     @property
     def quality_score(self) -> float:
-        """质量评分 (0-100)"""
-        from app.config import config
+        """Calculate overall proxy quality score (0-100)
 
-        # 成功率得分
+        Combines success rate, speed, and stability into a weighted score.
+        Higher scores indicate better quality proxies.
+        """
+        from core.config import settings
+
+        # Success rate score (0-100)
         success_score = self.success_rate * 100
 
-        # 速度得分 (速度越快分数越高，最快1秒=100分)
+        # Speed score (faster = higher score, 1 second = 100 points)
         if self.speed:
             speed_score = max(0, 100 - (self.speed * 10))
         else:
             speed_score = 0
 
-        # 稳定性得分（基于最近成功时间）
+        # Stability score (based on time since last success)
         if self.last_success:
             hours_since_success = (
                 datetime.now() - self.last_success
@@ -100,11 +127,10 @@ class ProxyModel(ProxyData):
         else:
             stability_score = 0
 
-        # 加权计算
-        weights = config.get("proxy", {})
-        w_success = weights.get("weight_success_rate", 0.4)
-        w_speed = weights.get("weight_speed", 0.3)
-        w_stability = weights.get("weight_stability", 0.3)
+        # Weighted calculation
+        w_success = settings.weight_success_rate
+        w_speed = settings.weight_speed
+        w_stability = settings.weight_stability
 
         return (
             success_score * w_success
@@ -113,7 +139,7 @@ class ProxyModel(ProxyData):
         )
 
     def to_dict(self) -> dict:
-        """转换为字典"""
+        """Convert proxy model to dictionary for JSON serialization"""
         return {
             "id": self.id,
             "ip": self.ip,
@@ -142,31 +168,6 @@ class ProxyModel(ProxyData):
         from_attributes = True
 
 
-# SQL 建表语句
-CREATE_PROXY_TABLE = """
-CREATE TABLE IF NOT EXISTS proxies (
-    id SERIAL PRIMARY KEY,
-    ip VARCHAR(45) NOT NULL,
-    port INTEGER NOT NULL CHECK (port >= 1 AND port <= 65535),
-    protocol VARCHAR(10) NOT NULL CHECK (protocol IN ('http', 'https', 'socks4', 'socks5')),
-    country VARCHAR(2),
-    anonymity VARCHAR(20) CHECK (anonymity IN ('transparent', 'anonymous', 'elite')),
-    source VARCHAR(100) NOT NULL,
-    speed FLOAT,
-    success_count INTEGER DEFAULT 0,
-    fail_count INTEGER DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'checking')),
-    last_checked TIMESTAMP,
-    last_success TIMESTAMP,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(ip, port, protocol)
-);
-
-CREATE INDEX IF NOT EXISTS idx_proxies_country ON proxies(country);
-CREATE INDEX IF NOT EXISTS idx_proxies_protocol ON proxies(protocol);
-CREATE INDEX IF NOT EXISTS idx_proxies_status ON proxies(status);
-CREATE INDEX IF NOT EXISTS idx_proxies_fail_count ON proxies(fail_count);
-CREATE INDEX IF NOT EXISTS idx_proxies_last_success ON proxies(last_success);
-CREATE INDEX IF NOT EXISTS idx_proxies_quality ON proxies(success_count DESC, speed ASC);
-"""
+# Aliases for backward compatibility
+ProxyData = Proxy
+ProxyModel = Proxy

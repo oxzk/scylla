@@ -1,17 +1,15 @@
-from re import S
 from spiders.base import BaseSpider
-from models import ProxyData
+from models import Proxy
 from typing import List
 
 
 class FreeProxyListSpider(BaseSpider):
-    """免费代理列表爬虫"""
 
     url = "https://free-proxy-list.net/zh-cn/ssl-proxy.html"
 
-    async def fetch_proxies(self) -> List[ProxyData]:
-        proxies: List[ProxyData] = []
-        bs = await self.get_html(self.url)
+    async def fetch_proxies(self) -> List[Proxy]:
+        proxies = []
+        bs = await self.get_document(self.url)
         rows = bs.select("#list table tbody tr")
         for row in rows:
             cols = [td.get_text(strip=True) for td in row.find_all("td")]

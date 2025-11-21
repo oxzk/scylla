@@ -1,121 +1,179 @@
 import asyncio
 from datetime import datetime
-from typing import Callable, List
+from typing import Callable, List, Optional
 from core.config import settings
 from services.spider_service import spider_service
+from services.proxy_service import proxy_service
+from sanic import Sanic
 from sanic.log import access_logger as logger
+from sanic.log import logger as root_logger
+from sanic.logging.color import Colors as c
 
 
 class Task:
-    """定时任务"""
+    """Represents a scheduled task that executes periodically at specified intervals.
+
+    Attributes:
+        name: Human-readable task name for logging and identification
+        func: Async callable to execute when the task runs
+        interval: Time interval in seconds between executions
+        last_run: Timestamp of the last successful execution
+        is_running: Flag to prevent concurrent executions of the same task
+    """
 
     def __init__(self, name: str, func: Callable, interval: int):
         self.name = name
         self.func = func
         self.interval = interval
-        self.last_run = None
+        self.last_run: Optional[datetime] = None
         self.is_running = False
 
     async def run(self):
-        """执行任务"""
+        """Execute the task with concurrency protection.
+
+        Skips execution if the previous run is still in progress to prevent
+        overlapping executions. Logs execution lifecycle and captures errors.
+        """
+        colored_name = f"{c.BLUE}{self.name}{c.END}"
         if self.is_running:
-            logger.info(f"[{self.name}] 上次任务仍在运行中，跳过本次执行")
+            root_logger.debug(
+                f"[{colored_name}] Previous task still running, skipping this execution"
+            )
             return
 
         self.is_running = True
         try:
-            logger.info(f"[{self.name}] 开始执行")
+            root_logger.debug(f"[{colored_name}] Task execution started")
             await self.func()
             self.last_run = datetime.now()
-            logger.info(f"[{self.name}] 执行完成")
+            root_logger.debug(f"[{colored_name}] Task execution completed successfully")
         except Exception as e:
-            logger.error(f"[{self.name}] 执行失败: {e}")
+            logger.error(f"[{colored_name}] Task execution failed: {e}", exc_info=True)
         finally:
             self.is_running = False
 
 
 class Scheduler:
-    """任务调度器"""
+    """Manages and executes multiple scheduled tasks concurrently.
+
+    The scheduler runs each task in its own coroutine, allowing independent
+    execution cycles. Tasks are executed immediately on startup, then repeat
+    at their configured intervals.
+    """
 
     def __init__(self):
         self.tasks: List[Task] = []
         self.running = False
+        self.app: Optional[Sanic] = None
 
     def add_task(self, name: str, func: Callable, interval: int):
-        """添加定时任务"""
+        """Register a new scheduled task.
+
+        Args:
+            name: Display name for the task (used in logs)
+            func: Async function to execute
+            interval: Execution interval in seconds
+        """
         task = Task(name, func, interval)
         self.tasks.append(task)
 
     def _load_task(self):
+        """Load all configured scheduled tasks"""
         self.add_task(
-            name="代理爬取", func=self.crawl_task, interval=settings.crawl_interval
+            name="Proxy Crawl", func=self.crawl_task, interval=settings.crawl_interval
         )
+        # Additional tasks can be added here:
         # self.add_task(
-        #     name="代理验证", func=self.validate_task, interval=settings.validate_interval
+        #     name="Proxy Validation",
+        #     func=self.validate_task,
+        #     interval=settings.validate_interval
         # )
         # self.add_task(
-        #     name="清理无效代理",
+        #     name="Cleanup Invalid Proxies",
         #     func=self.cleanup_task,
         #     interval=settings.cleanup_interval,
         # )
 
-    async def start(self):
+    async def start(self, app: Sanic):
+        """Start the scheduler and begin executing tasks
+
+        Args:
+            app: Sanic application instance
+        """
         self._load_task()
         if not self.tasks:
-            logger.error("没有任务需要执行")
+            logger.warning("No tasks scheduled for execution")
             return
 
+        self.app = app
         self.running = True
-        # 为每个任务创建独立的协程
+        logger.info(f"Scheduler started with {len(self.tasks)} task(s)")
+
+        # Initialize proxy service with database connection
+        proxy_service.init_db(self.app.ctx.db)
+
+        # Create independent coroutine for each task to allow parallel execution
         await asyncio.gather(*[self._run_task(task) for task in self.tasks])
 
     async def _run_task(self, task: Task):
-        """运行单个任务的循环"""
-        # 首次启动时立即执行一次
+        """Execute the task loop for a single scheduled task.
+
+        Runs the task immediately on first call, then enters a loop that
+        waits for the specified interval before each subsequent execution.
+
+        Args:
+            task: Task instance to execute
+        """
+        # Execute immediately on first startup, then wait for interval
         await task.run()
 
         while self.running:
-            logger.debug(f"[{task.name}] 等待 {task.interval} 秒后执行")
+            logger.info(
+                f"[{task.name}] Waiting {task.interval} seconds before next execution"
+            )
             await asyncio.sleep(task.interval)
             if self.running:
                 await task.run()
 
     async def stop(self):
-        """停止调度器"""
+        """Stop the scheduler and all running tasks gracefully."""
         self.running = False
-        logger.info("调度器已停止")
+        root_logger.info("Scheduler stopped successfully")
 
-    # 定时任务函数
+    # Scheduled task implementations
     async def crawl_task(self):
-        """爬取任务"""
+        """Execute proxy crawling from all configured spider sources."""
         try:
-            count = await spider_service.run_all()
-            logger.info(f"爬取任务完成，获取 {count} 个代理")
+            results = await spider_service.run_all()
+
+            # Process and save proxies
+            total_proxies = 0
+            saved_proxies = 0
+            failed_proxies = 0
+
+            for proxies in results:
+                if not isinstance(proxies, list):
+                    continue
+
+                total_proxies += len(proxies)
+                for proxy in proxies:
+                    try:
+                        await proxy_service.add_proxy(proxy)
+                        saved_proxies += 1
+                    except Exception as e:
+                        failed_proxies += 1
+                        logger.debug(
+                            f"Failed to save proxy {proxy.ip}:{proxy.port} - {e}"
+                        )
+
+            logger.info(
+                f"Proxy crawl completed - "
+                f"fetched {c.CYAN}{total_proxies}{c.END} proxies, "
+                f"saved {c.GREEN}{saved_proxies}{c.END}, "
+                f"failed {c.RED}{failed_proxies}{c.END}"
+            )
         except Exception as e:
-            logger.error(f"爬取任务失败: {e}", exc_info=True)
-
-    async def validate_task(self):
-        """验证任务"""
-        logger.info("执行代理验证任务")
-        try:
-            proxies = await db.get_proxies_for_validation(limit=500)
-            if proxies:
-                valid_count = await validator.validate_batch(proxies)
-                logger.info(f"验证任务完成，{valid_count} 个代理可用")
-            else:
-                logger.info("没有需要验证的代理")
-        except Exception as e:
-            logger.error(f"验证任务失败: {e}")
-
-    async def cleanup_task(self):
-        """清理任务"""
-        logger.info("执行清理任务")
-        try:
-            result = await db.cleanup_invalid_proxies()
-            logger.info(f"清理任务完成: {result}")
-        except Exception as e:
-            logger.error(f"清理任务失败: {e}")
+            logger.error(f"Proxy crawl task failed: {e}", exc_info=True)
 
 
-# 全局调度器实例
 scheduler = Scheduler()

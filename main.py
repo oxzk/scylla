@@ -1,75 +1,69 @@
 from sanic import Sanic
 from sanic.log import access_logger as logger
+from sanic.log import logger as root_logger
 from sanic.response import json as json_response
 from core.config import settings
 from core.database import db
 from core.scheduler import scheduler
 from api.routes import api_bp
 from sanic.log import LOGGING_CONFIG_DEFAULTS
+from sanic.logging.color import Colors as c
 from core import VERSION
-import logging
-import os
 from pathlib import Path
+import logging
 
+
+logging.getLogger("aiohttp").setLevel(logging.CRITICAL)
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 log_config = LOGGING_CONFIG_DEFAULTS.copy()
-# log_config["formatters"]["access"]["class"] = "sanic.logging.formatter.AutoFormatter"
-# log_config["formatters"]["access"]["format"] = "%(asctime)s[%(name)s][%(levelname)s]:%(message)s"
+log_config["formatters"]["access"]["class"] = "sanic.logging.formatter.AutoFormatter"
+log_config["formatters"]["access"]["format"] = settings.log_format
 log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
 
-# logging.basicConfig(
-#     format="%(asctime)s[%(name)s][%(levelname)s]:%(message)s",
-#     level=logging.INFO,
-#     datefmt="%Y-%m-%d %H:%M:%S",
-# )
 # 创建Sanic应用
 app = Sanic("scylla", log_config=log_config)
 app.config.APP_PATH = Path(__file__).parent
-app.config.update_config(
-    {
-        "REAL_IP_HEADER": "X-Real-IP",
-        "PROXIES_COUNT": 1,
-        "FORWARDED_SECRET": os.getenv("FORWARDED_SECRET", None),
-    }
-)
+app.config["REAL_IP_HEADER"] = "X-Real-IP"
+app.config["PROXIES_COUNT"] = 1
+app.config["FORWARDED_SECRET"] = settings.app_secret
+
 # 注册蓝图
 app.blueprint(api_bp)
 
 
 @app.before_server_start
-async def setup_db(app, loop):
-    """启动前初始化数据库"""
-    logger.debug("正在连接数据库...")
-    # try:
-    #     await db.connect()
-    #     logger.info("数据库连接成功")
-    # except Exception as e:
-    #     logger.error(f"数据库连接失败: {e}")
-    #     raise
+async def setup_db(app: Sanic, loop):
+    """初始化数据库"""
+    root_logger.debug("正在连接数据库...")
+    try:
+        await db.connect()
+        app.ctx.db = db
+        root_logger.debug("数据库连接成功")
+    except Exception as e:
+        logger.error(f"数据库连接失败: {e}")
 
 
 @app.after_server_start
 async def start_scheduler(app: Sanic, loop):
     """启动后启动调度器"""
-    logger.info("正在启动调度器...")
-    logger.debug('11')
-
-    # try:
-    #     app.add_task(scheduler.start())
-    #     logger.debug("调度器启动成功")
-    # except Exception as e:
-    #     logger.error(f"调度器启动失败: {e}")
+    root_logger.debug("正在启动调度器...")
+    try:
+        app.add_task(scheduler.start(app))
+        root_logger.debug("调度器启动成功")
+    except Exception as e:
+        logger.error(f"调度器启动失败: {e}")
 
 
 @app.before_server_stop
-async def close_db(app, loop):
+async def server_stop(app: Sanic, loop):
     """停止前关闭资源"""
-    logger.debug("正在关闭调度器...")
-    # await scheduler.stop()
+    root_logger.debug("正在关闭调度器...")
+    await scheduler.stop()
 
-    # logger.info("正在关闭数据库连接...")
-    # await db.close()
-    # logger.info("资源清理完成")
+    root_logger.debug("正在关闭数据库连接...")
+    if app.ctx.db:
+        await app.ctx.db.close()
 
 
 @app.route("/")
@@ -110,10 +104,7 @@ async def handle_exception(request, exception):
 
 
 if __name__ == "__main__":
-    # import asyncio
-    # from services.spider_service import spider_service
 
-    # asyncio.run(spider_service.run_all())
     app.run(
         host=settings.app_host,
         port=settings.app_port,

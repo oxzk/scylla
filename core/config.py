@@ -10,17 +10,14 @@ else:
 
 class Settings:
 
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_user: str = "user"
-    db_password: str = "password"
-    db_name: str = "proxy_db"
-    min_pool_size: int = 5
-    max_pool_size: int = 20
+    db_url: str = "postgresql://"
+    db_min_pool_size: int = 5
+    db_max_pool_size: int = 20
 
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_debug: bool = True
+    app_secret: str = "01KAGN5S0KW2WDXTMT8M09G6PB"
 
     crawl_interval: int = 3600
     validate_interval: int = 1800
@@ -36,6 +33,11 @@ class Settings:
 
     proxy_test_url: str = "http://httpbin.org/ip"
     proxy_test_timeout: int = 15
+
+    log_format = "\033[38;5;240m%(asctime)s\033[0m "
+    # if app_debug:
+    #     log_format += "\033[35m%(filename)s:%(lineno)d\033[0m \033[1000D\033[44C\033[K"
+    log_format += "%(levelname)s: \033[1000D\033[26C\033[K %(message)s"
 
     def __init__(self):
         config_path = Path(__file__).parent.parent / "config.toml"
@@ -54,8 +56,9 @@ class Settings:
             "DB_NAME": "db_name",
             "DB_USER": "db_user",
             "DB_PASSWORD": "db_password",
-            "API_HOST": "app_host",
-            "API_PORT": "app_port",
+            "APP_HOST": "app_host",
+            "APP_PORT": "app_port",
+            "APP_SECRET": "app_secret",
             "DEBUG": "app_debug",
         }
 
