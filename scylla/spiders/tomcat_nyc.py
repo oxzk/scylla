@@ -6,7 +6,6 @@ from typing import List
 class TomcatNycSpider(BaseSpider):
 
     url = "https://tomcat1235.nyc.mn/proxy_list"
-    # status = True
 
     async def fetch_proxies(self) -> List[Proxy]:
         proxies = []
