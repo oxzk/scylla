@@ -31,7 +31,7 @@ async def get_proxies(request: Request):
         protocol = request.args.get("protocol")
         country = request.args.get("country")
         anonymity = request.args.get("anonymity")
-        limit = min(int(request.args.get("limit", 10)), 100)
+        limit = min(int(request.args.get("limit", 10)), 20)
 
         # Get proxies from service (filtering done at database level)
         proxies = []

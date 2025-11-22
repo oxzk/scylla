@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Application settings
     app_host: str = Field(default="0.0.0.0", description="Application host")
     app_port: int = Field(default=8000, ge=1, le=65535, description="Application port")
-    app_debug: bool = Field(default=True, description="Debug mode")
+    app_debug: bool = Field(default=False, description="Debug mode")
     app_secret: str = Field(default="", description="Application secret key")
 
     # Scheduler intervals (in seconds)
