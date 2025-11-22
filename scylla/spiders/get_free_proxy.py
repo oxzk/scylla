@@ -11,7 +11,6 @@ class GetFreeProxySpider(BaseSpider):
         "https://getfreeproxy.com/lists/http-proxy-list",
         "https://getfreeproxy.com/lists/https-proxy-list",
     ]
-    status = True
 
     async def fetch_proxies(self) -> List[Proxy]:
         proxies = []

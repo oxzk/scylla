@@ -16,7 +16,7 @@ class BaseSpider(ABC):
         name: Spider name, defaults to class name without 'Spider' suffix
     """
 
-    status: bool = False
+    status: bool = True
     name: Optional[str] = None
 
     def __init__(

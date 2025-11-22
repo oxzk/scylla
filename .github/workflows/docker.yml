@@ -2,7 +2,7 @@ name: scylla
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
     paths-ignore:
       - '.github/workflows/docker.yml'
 
