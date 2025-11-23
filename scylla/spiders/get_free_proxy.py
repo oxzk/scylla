@@ -24,7 +24,10 @@ class GetFreeProxySpider(BaseSpider):
 
                 ip = cols[0]
                 port = cols[1]
-                protocol = cols[2]
+                protocol = cols[2].lower()
+
+                if 'http' not in protocol and 'socks' not in protocol:
+                    continue
 
                 proxy_data = self.create_proxy_data(ip, port, protocol)
                 if proxy_data:
