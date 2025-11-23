@@ -17,10 +17,10 @@ CREATE_PROXY_TABLE = """
         success_count INTEGER DEFAULT 0,
         fail_count INTEGER DEFAULT 0,
         status INTEGER DEFAULT 0,
-        last_checked TIMESTAMP,
-        last_success TIMESTAMP,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW(),
+        last_checked TIMESTAMPTZ,
+        last_success TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
         UNIQUE(ip, port, protocol)
     );
     CREATE INDEX IF NOT EXISTS idx_proxies_country ON proxies(country);
