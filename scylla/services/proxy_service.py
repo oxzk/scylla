@@ -271,7 +271,9 @@ class ProxyService:
         for row in rows:
             yield self._row_to_proxy(row)
 
-    async def get_proxies_needing_validation(self, limit: int = 500):
+    async def get_proxies_needing_validation(
+        self, limit: int = 500, max_fail_count: int = 3
+    ):
         """Get proxies that need validation.
 
         Prioritizes proxies that haven't been checked recently.
@@ -287,7 +289,7 @@ class ProxyService:
         query = f"""
             SELECT *
             FROM proxies
-            WHERE fail_count < 3
+            WHERE fail_count < {max_fail_count}
             ORDER BY last_checked ASC NULLS FIRST
             LIMIT $1
         """

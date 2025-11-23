@@ -94,7 +94,7 @@ class ValidatorService:
             if response.ok:
                 response_time = time.time() - start_time
                 headers = dict(response.headers)
-                origin = Proxy.ip
+                origin = proxy.ip
 
                 if url == "https://httpbin.org/get":
                     data = response.json()

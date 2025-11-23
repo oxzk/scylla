@@ -8,6 +8,7 @@ from datetime import datetime
 
 # Local imports
 from scylla import logger, c
+from scylla.core.config import settings
 from scylla.services.proxy_service import proxy_service
 from scylla.services.validator_service import validator_service
 
@@ -24,7 +25,7 @@ async def validate_task():
 
         # Get proxies needing validation
         proxies = [
-            p async for p in proxy_service.get_proxies_needing_validation(limit=300)
+            p async for p in proxy_service.get_proxies_needing_validation(300, settings.max_fail_count)
         ]
 
         if not proxies:

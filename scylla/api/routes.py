@@ -141,7 +141,7 @@ async def test_proxy(request: Request):
             raise ValueError("Missing 'proxy' parameter in form data")
 
         test_url = request.form.get("test_url", "https://ipinfo.io/")
-        timeout_seconds = int(request.form.get("timeout", 10))
+        timeout_seconds = int(request.form.get("timeout", 20))
 
         # Test the proxy
         start_time = time.time()
