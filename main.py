@@ -111,7 +111,7 @@ async def start_scheduler(app: Sanic, _loop) -> None:
     root_logger.debug(f"{c.CYAN}Starting scheduler...{c.END}")
     try:
         scheduler._initialize_tasks()
-        app.add_task(scheduler.start())
+        # app.add_task(scheduler.start())
         root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler started successfully")
     except Exception as e:
         logger.error(f"{c.RED}✗{c.END} Scheduler startup failed: {e}", exc_info=True)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
@@ -121,7 +121,7 @@ class Proxy(BaseModel):
         # Stability score (based on time since last success)
         if self.last_success:
             hours_since_success = (
-                datetime.now() - self.last_success
+                datetime.now(timezone.utc) - self.last_success
             ).total_seconds() / 3600
             stability_score = max(0, 100 - (hours_since_success * 5))
         else:
