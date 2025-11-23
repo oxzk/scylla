@@ -14,11 +14,6 @@ from scylla.services.proxy_service import proxy_service
 api_bp = Blueprint("api", url_prefix="/api")
 
 
-@api_bp.get("/robot.txt", name="robot_file")
-async def robot_file(request):
-    return response.empty()
-
-
 @api_bp.route("/")
 async def index(request: Request):
     """API index page with documentation links.

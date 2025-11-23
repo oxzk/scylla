@@ -10,7 +10,7 @@ import logging
 
 # Third-party imports
 from sanic import Sanic, Request
-from sanic.response import json as json_response, HTTPResponse
+from sanic.response import json as json_response, HTTPResponse, empty
 from sanic.log import LOGGING_CONFIG_DEFAULTS
 
 # Local imports
@@ -40,6 +40,21 @@ app.config["FORWARDED_SECRET"] = settings.app_secret
 # Register API blueprint
 app.blueprint(api_bp)
 app.static("/favicon.ico", "static/favicon.png")
+
+
+@app.get("/robot.txt", name="robot_file")
+async def robot_file(request: Request):
+    return empty()
+
+
+@app.get("/", name="home")
+async def home(request: Request):
+    return json_response(
+        {
+            "name": request.app.name,
+            "version": VERSION,
+        }
+    )
 
 
 @app.before_server_start
@@ -83,7 +98,7 @@ async def start_scheduler(app: Sanic, _loop) -> None:
     root_logger.debug(f"{c.CYAN}Starting scheduler...{c.END}")
     try:
         scheduler._initialize_tasks()
-        # app.add_task(scheduler.start())
+        app.add_task(scheduler.start())
         root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler started successfully")
     except Exception as e:
         logger.error(f"{c.RED}✗{c.END} Scheduler startup failed: {e}", exc_info=True)
