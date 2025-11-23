@@ -107,7 +107,7 @@ class Proxy(BaseModel):
         Combines success rate, speed, and stability into a weighted score.
         Higher scores indicate better quality proxies.
         """
-        from core.config import settings
+        from scylla.core.config import settings
 
         # Success rate score (0-100)
         success_score = self.success_rate * 100
@@ -167,7 +167,3 @@ class Proxy(BaseModel):
         use_enum_values = True
         from_attributes = True
 
-
-# Aliases for backward compatibility
-ProxyData = Proxy
-ProxyModel = Proxy

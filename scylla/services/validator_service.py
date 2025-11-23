@@ -92,12 +92,17 @@ class ValidatorService:
 
             # Validate response
             if response.ok:
-                # Read content to ensure full connection
-                _ = response.text
                 response_time = time.time() - start_time
+                headers = dict(response.headers)
+                origin = Proxy.ip
+
+                if url == "https://httpbin.org/get":
+                    data = response.json()
+                    headers = data["headers"]
+                    origin = data["origin"]
 
                 # Detect anonymity level from response headers
-                anonymity = self._detect_anonymity(response.headers, proxy.ip)
+                anonymity = self._detect_anonymity(headers, origin)
 
                 logger.info(
                     f"{c.GREEN}✓{c.END} Proxy {proxy.source} {proxy.url} validated successfully, "
@@ -122,43 +127,27 @@ class ValidatorService:
             return (proxy.id, False, None, None)
 
     def _detect_anonymity(self, headers: dict, proxy_ip: str) -> str:
-        """Detect proxy anonymity level from response headers.
-
-        Args:
-            headers: Response headers from the test request
-            proxy_ip: IP address of the proxy being tested
-
-        Returns:
-            Anonymity level: 'transparent', 'anonymous', or 'elite'
-        """
-        # Headers that indicate real IP exposure (check first for transparency)
-        ip_exposure_headers = ["x-forwarded-for", "x-real-ip", "client-ip", "forwarded"]
-
-        # Check if real IP is exposed (transparent proxy)
-        for header_name in ip_exposure_headers:
-            # Check both lowercase and title case
-            header_value = headers.get(header_name) or headers.get(header_name.title())
-            if header_value:
-                # If the header contains an IP different from proxy IP, it's transparent
-                if proxy_ip.lower() not in header_value.lower():
-                    return "transparent"
-
-        # Headers that indicate proxy usage
-        proxy_indicator_headers = [
-            "via",
-            "x-proxy-id",
-            "x-proxy",
-            "proxy-connection",
-            "x-forwarded",
-            "forwarded-for",
+        headers_lower = {k.lower(): v for k, v in headers.items()}
+        suspicious_headers = [
+            "X-Forwarded-For",
+            "X-Real-Ip",
+            "Via",
+            "X-Proxy-Id",
+            "Proxy-Connection",
+            "Forwarded",
+            "Client-Ip",
+            "X-Client-Ip",
         ]
 
-        # Check if any proxy headers exist (anonymous proxy)
-        for header_name in proxy_indicator_headers:
-            if header_name in headers or header_name.title() in headers:
+        for header_name, header_value in headers.items():
+            if proxy_ip in header_value:
+                return "transparent"
+
+        for header_name in suspicious_headers:
+            v = headers_lower.get(header_name.lower())
+            if v:
                 return "anonymous"
 
-        # No proxy-related headers found (elite proxy)
         return "elite"
 
     async def validate_batch(self, proxies: List[Proxy]) -> Dict[str, Any]:

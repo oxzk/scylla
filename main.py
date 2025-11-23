@@ -14,7 +14,7 @@ from sanic.response import json as json_response, HTTPResponse
 from sanic.log import LOGGING_CONFIG_DEFAULTS
 
 # Local imports
-from scylla import logger, root_logger, c, __version__ as VERSION
+from scylla import logger, root_logger, c
 from scylla.core.config import settings
 from scylla.core.database import db
 from scylla.core.scheduler import scheduler
@@ -39,6 +39,7 @@ app.config["FORWARDED_SECRET"] = settings.app_secret
 
 # Register API blueprint
 app.blueprint(api_bp)
+app.static("/favicon.ico", "static/favicon.png")
 
 
 @app.before_server_start
@@ -105,29 +106,6 @@ async def server_stop(app: Sanic, _loop) -> None:
     if app.ctx.db:
         await app.ctx.db.close()
         root_logger.debug(f"{c.GREEN}✓{c.END} Database connection closed")
-
-
-@app.route("/")
-async def index(request: Request) -> HTTPResponse:
-    """API index page with documentation links.
-
-    Returns:
-        JSON response with API information and endpoint documentation
-    """
-    return json_response(
-        {
-            "name": app.name,
-            "version": VERSION,
-            "message": f"{app.name} Proxy Pool API - Supports HTTP/HTTPS/SOCKS4/SOCKS5",
-            "documentation": {
-                "proxies": {
-                    "list": "GET /api/proxies?protocol=http&country=US&limit=10",
-                },
-                "stats": "GET /api/stats",
-                "health": "GET /api/health",
-            },
-        }
-    )
 
 
 @app.exception(Exception)

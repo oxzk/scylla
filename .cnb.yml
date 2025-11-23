@@ -1,0 +1,49 @@
+# main:
+#   "crontab: */30 * * * *":
+#     - name: crontab
+#       runner:
+#         cpus: 2
+#       docker:
+#         image: docker.cnb.cool/oxzk.co/code-server:latest
+#       imports: https://cnb.cool/oxzk.co/env/-/blob/main/scylla.json
+#       stages:
+#         - name: python
+#           script: |
+#             cd /workspace
+#             python3 -m venv .venv
+#             ls -la
+#             . .venv/bin/activate
+#             pip install -r requirements.txt
+#             python main.py
+
+# main:
+#   push:
+#     - runner:
+#         cpus: 2
+#       docker:
+#         image: docker.cnb.cool/oxzk.co/code-server:latest
+#       imports: https://cnb.cool/oxzk.co/env/-/blob/main/v2ray.json
+#       stages:
+#         - name: python
+#           script: |
+#             ls -la
+#             nohup v2ray -c /root/.cnb/v2ray-config.json >/dev/null 2>&1 &
+
+$:
+  vscode:
+    - runner:
+        cpus: 4
+        # tags: cnb:arch:amd64:gpu
+      docker:
+        image: docker.cnb.cool/oxzk.co/code-server:latest
+      services:
+        - vscode
+        - docker
+      stages:
+        - name: cnb-init
+          script: |
+            bash /root/.cnb/cnb-init.sh
+      endStages:
+        - name: cnb-end
+          script: |
+            bash /root/.cnb/cnb-destory.sh

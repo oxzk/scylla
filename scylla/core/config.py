@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # Proxy testing
     proxy_test_url: str = Field(
-        default="https://httpbin.org/ip", description="URL for testing proxies"
+        default="https://httpbin.org/get", description="URL for testing proxies"
     )
     proxy_test_timeout: int = Field(
         default=15, ge=1, description="Proxy test timeout in seconds"

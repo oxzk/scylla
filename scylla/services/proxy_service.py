@@ -261,9 +261,8 @@ class ProxyService:
             FROM proxies
             WHERE {where_clause}
             ORDER BY 
-                (success_count::float / NULLIF(success_count + fail_count, 0)) DESC,
-                last_success DESC,
-                speed ASC NULLS LAST
+                success_count DESC,
+                last_success DESC
             LIMIT ${param_index}
         """
         params.append(limit)
@@ -372,7 +371,7 @@ class ProxyService:
         """Get proxy statistics.
 
         Returns:
-            Dictionary with proxy counts and statistics
+            Dictionary with proxy counts and statistics including anonymity breakdown
         """
         self._ensure_db()
 
@@ -384,7 +383,10 @@ class ProxyService:
                 COUNT(*) FILTER (WHERE status = {ProxyStatus.PENDING.value}) as checking,
                 COUNT(DISTINCT protocol) as protocols,
                 COUNT(DISTINCT country) as countries,
-                AVG(speed) FILTER (WHERE speed IS NOT NULL) as avg_speed
+                AVG(speed) FILTER (WHERE speed IS NOT NULL) as avg_speed,
+                COUNT(*) FILTER (WHERE anonymity = 'transparent') as transparent,
+                COUNT(*) FILTER (WHERE anonymity = 'anonymous') as anonymous,
+                COUNT(*) FILTER (WHERE anonymity = 'elite') as elite
             FROM proxies
         """
         row = await self.db.fetchrow(query)
@@ -399,6 +401,11 @@ class ProxyService:
             "avg_speed": (
                 round(float(row["avg_speed"]), 2) if row["avg_speed"] else None
             ),
+            "anonymity": {
+                "transparent": row["transparent"],
+                "anonymous": row["anonymous"],
+                "elite": row["elite"],
+            },
         }
 
     async def get_proxies_without_country(self, limit: int = 100) -> List[dict]:
