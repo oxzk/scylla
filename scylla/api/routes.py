@@ -6,35 +6,12 @@ Provides RESTful API endpoints for proxy management, validation, and statistics.
 # Third-party imports
 from sanic import Blueprint, response
 from sanic.request import Request
-from scylla import logger, __version__ as VERSION
+from scylla import logger
 
 # Local imports
 from scylla.services.proxy_service import proxy_service
 
 api_bp = Blueprint("api", url_prefix="/api")
-
-
-@api_bp.route("/")
-async def index(request: Request):
-    """API index page with documentation links.
-
-    Returns:
-        JSON response with API information and endpoint documentation
-    """
-    return response.json(
-        {
-            "name": request.app.name,
-            "version": VERSION,
-            "message": f"{request.app.name} Proxy Pool API - Supports HTTP/HTTPS/SOCKS4/SOCKS5",
-            "documentation": {
-                "proxies": {
-                    "list": "GET /api/proxies?protocol=http&country=US&limit=10",
-                },
-                "stats": "GET /api/stats",
-                "health": "GET /api/health",
-            },
-        }
-    )
 
 
 @api_bp.route("/proxies", methods=["GET"])

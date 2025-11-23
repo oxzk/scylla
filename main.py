@@ -14,7 +14,7 @@ from sanic.response import json as json_response, HTTPResponse, empty
 from sanic.log import LOGGING_CONFIG_DEFAULTS
 
 # Local imports
-from scylla import logger, root_logger, c
+from scylla import logger, root_logger, c, __version__ as VERSION
 from scylla.core.config import settings
 from scylla.core.database import db
 from scylla.core.scheduler import scheduler
@@ -47,12 +47,25 @@ async def robot_file(request: Request):
     return empty()
 
 
-@app.get("/", name="home")
-async def home(request: Request):
+@app.get("/", name="index")
+async def robot_file(request: Request):
+    return empty()
+
+
+@app.get("/version", name="version")
+async def version(request: Request):
     return json_response(
         {
-            "name": request.app.name,
+            "name": app.name,
             "version": VERSION,
+            "message": f"{app.name} Proxy Pool API - Supports HTTP/HTTPS/SOCKS4/SOCKS5",
+            "documentation": {
+                "proxies": {
+                    "list": "GET /api/proxies?protocol=http&country=US&limit=10",
+                },
+                "stats": "GET /api/stats",
+                "health": "GET /api/health",
+            },
         }
     )
 
