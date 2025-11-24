@@ -32,7 +32,7 @@ class Settings(BaseSettings):
         default=3600, ge=1, description="Crawl interval in seconds"
     )
     validate_interval: int = Field(
-        default=60, ge=1, description="Validation interval in seconds"
+        default=20, ge=1, description="Validation interval in seconds"
     )
     cleanup_interval: int = Field(
         default=7200, ge=1, description="Cleanup interval in seconds"
