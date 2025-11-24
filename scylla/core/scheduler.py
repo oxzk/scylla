@@ -140,27 +140,31 @@ class Scheduler:
         self.tasks.append(task)
         return task
 
-    def _initialize_tasks(self) -> None:
-        """Initialize and register all configured scheduled tasks.
+    def _initialize_tasks(self, app) -> None:
+        with app.shared_ctx.lock:
+            if app.shared_ctx.queue.empty():
+                app.shared_ctx.queue.put(app.m.pid)
+                self.add_task(
+                    name="Proxy Crawl",
+                    func=crawl_task,
+                    interval=settings.crawl_interval,
+                )
 
-        Loads tasks from the tasks module and registers them with their
-        configured intervals from settings.
-        """
-        self.add_task(
-            name="Proxy Crawl", func=crawl_task, interval=settings.crawl_interval
-        )
+                self.add_task(
+                    name="Proxy Cleanup",
+                    func=cleanup_task,
+                    interval=settings.cleanup_interval,
+                )
+
+                self.add_task(
+                    name="Country Update", func=update_country_task, interval=3600
+                )
 
         self.add_task(
             name="Proxy Validation",
             func=validate_task,
             interval=settings.validate_interval,
         )
-
-        self.add_task(
-            name="Proxy Cleanup", func=cleanup_task, interval=settings.cleanup_interval
-        )
-
-        self.add_task(name="Country Update", func=update_country_task, interval=3600)
 
     async def start(self) -> None:
         """Start the scheduler and begin executing tasks."""

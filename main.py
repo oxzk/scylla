@@ -97,6 +97,14 @@ async def setup_db(app: Sanic, _loop) -> None:
         raise  # Prevent application from starting with failed database
 
 
+@app.main_process_start
+async def main_process_start(app):
+    from multiprocessing import Lock, Queue
+
+    app.shared_ctx.lock = Lock()
+    app.shared_ctx.queue = Queue()
+
+
 @app.after_server_start
 async def start_scheduler(app: Sanic, _loop) -> None:
     """Start the task scheduler after server is ready.
@@ -110,7 +118,8 @@ async def start_scheduler(app: Sanic, _loop) -> None:
     """
     root_logger.debug(f"{c.CYAN}Starting scheduler...{c.END}")
     try:
-        scheduler._initialize_tasks()
+
+        scheduler._initialize_tasks(app)
         app.add_task(scheduler.start())
         root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler started successfully")
     except Exception as e:
@@ -163,5 +172,5 @@ if __name__ == "__main__":
         host=settings.app_host,
         port=settings.app_port,
         dev=settings.app_debug,
-        fast=False,
+        workers=settings.app_worker,
     )

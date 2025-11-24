@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, ge=1, le=65535, description="Application port")
     app_debug: bool = Field(default=False, description="Debug mode")
     app_secret: str = Field(default="", description="Application secret key")
+    app_worker: int = Field(default=1, ge=1, le=20, description="Application workers")
 
     # Scheduler intervals (in seconds)
     crawl_interval: int = Field(
