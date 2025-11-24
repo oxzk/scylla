@@ -172,7 +172,7 @@ docker build -t scylla:latest .
 ```bash
 docker run -d \
   --name scylla \
-  -p 8899:8899 \
+  -p 8000:8000 \
   -e DB_URL=postgresql://user:password@host:5432/scylla \
   scylla:latest
 ```
