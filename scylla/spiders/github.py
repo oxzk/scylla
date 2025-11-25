@@ -28,8 +28,12 @@ class GithubSpider(BaseSpider):
             "socks5": "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt",
             "socks4": "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks4.txt",
         },
+        "GithubOpenProxyList": {
+            "https": "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/HTTPS_RAW.txt",
+            "socks5": "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS5_RAW.txt",
+            "socks4": "https://cdn.jsdelivr.net/gh/roosterkid/openproxylist/SOCKS4_RAW.txt",
+        },
     }
-    status = True
 
     async def fetch_proxies(self) -> List[Proxy]:
         proxies = []

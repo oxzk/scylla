@@ -25,7 +25,10 @@ async def validate_task():
 
         # Get proxies needing validation
         proxies = [
-            p async for p in proxy_service.get_proxies_needing_validation(300, settings.max_fail_count)
+            p
+            async for p in proxy_service.get_proxies_needing_validation(
+                settings.validate_batch_limit, settings.max_fail_count
+            )
         ]
 
         if not proxies:

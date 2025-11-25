@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     max_fail_count: int = Field(
         default=3, ge=1, description="Maximum failure count before removing proxy"
     )
+    validate_batch_limit: int = Field(
+        default=300,
+        ge=1,
+        description="Maximum number of proxies to validate in each batch",
+    )
     max_concurrent_spiders: int = Field(
         default=5, ge=1, description="Maximum concurrent spider tasks"
     )
