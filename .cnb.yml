@@ -1,22 +1,22 @@
-main:
-  "crontab: */30 * * * *":
-    - name: Validate proxies
-      runner:
-        cpus: 2
-      docker:
-        image: docker.cnb.cool/oxzk.co/code-server:latest
-      imports: https://cnb.cool/oxzk.co/env/-/blob/main/scylla.json
-      stages:
-        - name: python
-          script: |
-            cd /workspace
-            if [ ! -d ".venv" ]; then
-              python3 -m venv .venv
-            fi
-            ls -la
-            . .venv/bin/activate
-            pip install -r requirements.txt
-            python cli.py
+# main:
+#   "crontab: */30 * * * *":
+#     - name: Validate proxies
+#       runner:
+#         cpus: 2
+#       docker:
+#         image: docker.cnb.cool/oxzk.co/code-server:latest
+#       imports: https://cnb.cool/oxzk.co/env/-/blob/main/scylla.json
+#       stages:
+#         - name: python
+#           script: |
+#             cd /workspace
+#             if [ ! -d ".venv" ]; then
+#               python3 -m venv .venv
+#             fi
+#             ls -la
+#             . .venv/bin/activate
+#             pip install -r requirements.txt
+#             python cli.py
 
 # main:
 #   push:
