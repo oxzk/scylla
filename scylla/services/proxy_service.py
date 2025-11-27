@@ -290,6 +290,33 @@ class ProxyService:
             SELECT *
             FROM proxies
             WHERE fail_count < {max_fail_count}
+                AND status IN ({ProxyStatus.PENDING.value}, {ProxyStatus.FAILED.value})
+            ORDER BY last_checked ASC NULLS FIRST
+            LIMIT $1
+        """
+
+        rows = await self.db.fetch(query, limit)
+        for row in rows:
+            yield self._row_to_proxy(row)
+
+    async def get_successful_proxies_for_validation(self, limit: int = 200):
+        """Get successful proxies that need re-validation.
+
+        Prioritizes successful proxies that haven't been checked recently
+        to ensure they are still working.
+
+        Args:
+            limit: Maximum number of proxies to return
+
+        Yields:
+            Proxy instances needing re-validation
+        """
+        self._ensure_db()
+
+        query = f"""
+            SELECT *
+            FROM proxies
+            WHERE status = {ProxyStatus.SUCCESS.value}
             ORDER BY last_checked ASC NULLS FIRST
             LIMIT $1
         """

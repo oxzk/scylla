@@ -10,7 +10,7 @@ import logging
 
 # Local imports
 from scylla.core.database import db
-from scylla.tasks import validate_task
+from scylla.tasks import validate_pending_task
 
 
 # Configure logging
@@ -27,8 +27,8 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 
 async def main():
-    """Main CLI entry point - executes validate_task."""
-    logger.info("Starting Scylla CLI - Validate Task")
+    """Main CLI entry point - executes validate_pending_task."""
+    logger.info("Starting Scylla CLI - Validate Pending Task")
 
     try:
         # Initialize database connection
@@ -42,8 +42,8 @@ async def main():
         proxy_service._initialize_db(db)
 
         # Execute validation task
-        logger.info("Running validate_task...")
-        await validate_task()
+        logger.info("Running validate_pending_task...")
+        await validate_pending_task()
         logger.info("✓ Validate task completed successfully")
 
     except Exception as e:

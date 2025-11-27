@@ -12,7 +12,13 @@ from typing import Callable, List, Optional, Dict, Any
 # Local imports
 from scylla import logger, root_logger, c
 from scylla.core.config import settings
-from scylla.tasks import crawl_task, validate_task, cleanup_task, update_country_task
+from scylla.tasks import (
+    crawl_task,
+    validate_pending_task,
+    validate_success_task,
+    cleanup_task,
+    update_country_task,
+)
 
 
 class Task:
@@ -157,13 +163,20 @@ class Scheduler:
                 )
 
                 self.add_task(
-                    name="Country Update", func=update_country_task, interval=3600
+                    name="Country Update", func=update_country_task, interval=120
                 )
 
+        # Add validation tasks for all workers
         self.add_task(
-            name="Proxy Validation",
-            func=validate_task,
+            name="Pending Proxy Validation",
+            func=validate_pending_task,
             interval=settings.validate_interval,
+        )
+
+        self.add_task(
+            name="Success Proxy Validation",
+            func=validate_success_task,
+            interval=50,  # Less frequent for successful proxies
         )
 
     async def start(self) -> None:

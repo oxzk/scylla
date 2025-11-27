@@ -15,10 +15,10 @@ class Settings(BaseSettings):
     # Database settings
     db_url: str = Field(default="postgresql://", description="Database connection URL")
     db_min_pool_size: int = Field(
-        default=5, ge=1, description="Minimum database connection pool size"
+        default=2, ge=1, description="Minimum database connection pool size"
     )
     db_max_pool_size: int = Field(
-        default=20, ge=1, description="Maximum database connection pool size"
+        default=10, ge=1, description="Maximum database connection pool size"
     )
 
     # Application settings
