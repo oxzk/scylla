@@ -163,7 +163,9 @@ class Scheduler:
                 )
 
                 self.add_task(
-                    name="Country Update", func=update_country_task, interval=120
+                    name="Country Update",
+                    func=update_country_task,
+                    interval=settings.update_country_interval,
                 )
 
         # Add validation tasks for all workers
@@ -176,7 +178,7 @@ class Scheduler:
         self.add_task(
             name="Success Proxy Validation",
             func=validate_success_task,
-            interval=50,  # Less frequent for successful proxies
+            interval=settings.validate_success_interval,
         )
 
     async def start(self) -> None:

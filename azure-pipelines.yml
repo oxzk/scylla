@@ -1,0 +1,49 @@
+# Azure Pipelines configuration for Scylla Proxy Pool
+# Runs CLI validation task on a schedule
+
+trigger: none # Disable CI/CD triggers
+
+schedules:
+    - cron: '*/5 * * * *' # Run every 5 minutes
+      displayName: Proxy Validation Schedule
+      branches:
+          include:
+              - main
+      always: true
+
+pool:
+    vmImage: 'ubuntu-latest'
+
+variables:
+    PYTHON_VERSION: '3.11'
+
+steps:
+    - task: UsePythonVersion@0
+      displayName: 'Set Python version'
+      inputs:
+          versionSpec: '$(PYTHON_VERSION)'
+          addToPath: true
+
+    - script: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      displayName: 'Install dependencies'
+
+    - script: |
+          python cli.py
+      displayName: 'Run proxy validation CLI'
+      env:
+          DB_URL: $(DB_URL)
+          DB_MIN_POOL_SIZE: $(DB_MIN_POOL_SIZE)
+          DB_MAX_POOL_SIZE: $(DB_MAX_POOL_SIZE)
+          PROXY_TEST_URL: $(PROXY_TEST_URL)
+          PROXY_TEST_TIMEOUT: $(PROXY_TEST_TIMEOUT)
+          MAX_FAIL_COUNT: $(MAX_FAIL_COUNT)
+          VALIDATE_BATCH_LIMIT: $(VALIDATE_BATCH_LIMIT)
+          MAX_CONCURRENT_VALIDATORS: $(MAX_CONCURRENT_VALIDATORS)
+      continueOnError: true
+
+    - script: |
+          echo "Validation task completed"
+      displayName: 'Cleanup'
+      condition: always()

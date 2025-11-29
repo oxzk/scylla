@@ -33,10 +33,16 @@ class Settings(BaseSettings):
         default=3600, ge=1, description="Crawl interval in seconds"
     )
     validate_interval: int = Field(
-        default=20, ge=1, description="Validation interval in seconds"
+        default=20, ge=1, description="Pending proxy validation interval in seconds"
+    )
+    validate_success_interval: int = Field(
+        default=50, ge=1, description="Success proxy re-validation interval in seconds"
     )
     cleanup_interval: int = Field(
         default=7200, ge=1, description="Cleanup interval in seconds"
+    )
+    update_country_interval: int = Field(
+        default=600, ge=1, description="Country update interval in seconds"
     )
 
     # Scoring weights (must sum to 1.0)

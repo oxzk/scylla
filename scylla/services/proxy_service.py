@@ -6,12 +6,15 @@ validation tracking, quality scoring, and cleanup tasks.
 
 # Standard library imports
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
 # Local imports
 from scylla import logger
 from scylla.core.database import Database
 from scylla.models.proxy import Proxy, ProxyStatus
+
+# Type alias for validation result tuple
+ValidationResult = Tuple[int, bool, Optional[float], Optional[str]]
 
 
 class ProxyService:
@@ -159,7 +162,7 @@ class ProxyService:
         is_success: bool,
         response_time: Optional[float] = None,
         anonymity: Optional[str] = None,
-    ):
+    ) -> None:
         """Record proxy validation result with single optimized query.
 
         Args:
@@ -170,11 +173,9 @@ class ProxyService:
         """
         self._ensure_db()
 
-        # Format response_time to 2 decimal places if provided
         if response_time is not None:
             response_time = round(response_time, 2)
 
-        # Single query handles both success and failure cases
         target_status = int(ProxyStatus.SUCCESS if is_success else ProxyStatus.FAILED)
         query = """
             UPDATE proxies 
@@ -197,6 +198,79 @@ class ProxyService:
             target_status,
             anonymity,
         )
+
+    async def batch_record_validation_results(
+        self, results: List[ValidationResult]
+    ) -> int:
+        """Batch record validation results using optimized bulk update.
+
+        Args:
+            results: List of (proxy_id, is_success, response_time, anonymity) tuples
+
+        Returns:
+            Number of updated records
+        """
+        if not results:
+            return 0
+
+        self._ensure_db()
+
+        # Separate success and failure results for batch processing
+        success_data = []
+        failure_ids = []
+
+        for proxy_id, is_success, response_time, anonymity in results:
+            if not proxy_id:
+                continue
+            if is_success:
+                speed = round(response_time, 2) if response_time else None
+                success_data.append((proxy_id, speed, anonymity or "unknown"))
+            else:
+                failure_ids.append(proxy_id)
+
+        updated = 0
+
+        # Batch update successful proxies
+        if success_data:
+            ids = [d[0] for d in success_data]
+            speeds = [d[1] for d in success_data]
+            anonymities = [d[2] for d in success_data]
+
+            query = f"""
+                UPDATE proxies SET 
+                    success_count = success_count + 1,
+                    fail_count = 0,
+                    last_checked = NOW(),
+                    last_success = NOW(),
+                    speed = data.speed,
+                    anonymity = data.anonymity,
+                    status = {int(ProxyStatus.SUCCESS)},
+                    updated_at = NOW()
+                FROM (
+                    SELECT 
+                        unnest($1::int[]) as id,
+                        unnest($2::float[]) as speed,
+                        unnest($3::text[]) as anonymity
+                ) as data
+                WHERE proxies.id = data.id
+            """
+            result = await self.db.execute(query, ids, speeds, anonymities)
+            updated += int(result.split()[-1]) if result else 0
+
+        # Batch update failed proxies
+        if failure_ids:
+            query = f"""
+                UPDATE proxies SET 
+                    fail_count = fail_count + 1,
+                    last_checked = NOW(),
+                    status = {int(ProxyStatus.FAILED)},
+                    updated_at = NOW()
+                WHERE id = ANY($1::int[])
+            """
+            result = await self.db.execute(query, failure_ids)
+            updated += int(result.split()[-1]) if result else 0
+
+        return updated
 
     async def record_failure(self, proxy_id: int):
         """Record a validation failure for a proxy.
@@ -221,7 +295,7 @@ class ProxyService:
         country: Optional[str] = None,
         anonymity: Optional[str] = None,
         limit: int = 10,
-    ):
+    ) -> AsyncGenerator[Proxy, None]:
         """Get active proxies with optional filtering.
 
         Args:
@@ -273,13 +347,14 @@ class ProxyService:
 
     async def get_proxies_needing_validation(
         self, limit: int = 500, max_fail_count: int = 3
-    ):
-        """Get proxies that need validation.
+    ) -> AsyncGenerator[Proxy, None]:
+        """Get proxies that need validation (pending/failed status).
 
         Prioritizes proxies that haven't been checked recently.
 
         Args:
             limit: Maximum number of proxies to return
+            max_fail_count: Maximum fail count threshold
 
         Yields:
             Proxy instances needing validation
@@ -299,7 +374,9 @@ class ProxyService:
         for row in rows:
             yield self._row_to_proxy(row)
 
-    async def get_successful_proxies_for_validation(self, limit: int = 200):
+    async def get_successful_proxies_for_validation(
+        self, limit: int = 200
+    ) -> AsyncGenerator[Proxy, None]:
         """Get successful proxies that need re-validation.
 
         Prioritizes successful proxies that haven't been checked recently
@@ -438,7 +515,10 @@ class ProxyService:
         }
 
     async def get_proxies_without_country(self, limit: int = 100) -> List[dict]:
-        """Get proxies that don't have country information.
+        """Get successful proxies that don't have country information.
+
+        Only returns proxies with SUCCESS status to avoid updating country
+        information for proxies that may be removed soon.
 
         Args:
             limit: Maximum number of proxies to return (default: 100)
@@ -448,9 +528,10 @@ class ProxyService:
         """
         self._ensure_db()
 
-        query = """
+        query = f"""
             SELECT id, ip FROM proxies 
-            WHERE country IS NULL OR country = ''
+            WHERE (country IS NULL OR country = '')
+                AND status = {int(ProxyStatus.SUCCESS)}
             LIMIT $1
         """
         rows = await self.db.fetch(query, limit)

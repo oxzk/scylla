@@ -146,3 +146,95 @@ async def test_proxy(request: Request):
         test_result["error"] = str(e)
 
     return response.json({"success": True, "data": test_result})
+
+
+@api_bp.route("/metrics", methods=["GET"])
+async def get_metrics(request: Request):
+    """Get system metrics in Prometheus-compatible format.
+
+    Returns:
+        Plain text metrics for Prometheus scraping
+    """
+    from scylla.core.scheduler import scheduler
+
+    try:
+        stats = await proxy_service.get_stats()
+        tasks_status = list(scheduler.get_tasks_status())
+
+        # Build Prometheus-style metrics
+        lines = [
+            "# HELP scylla_proxies_total Total number of proxies",
+            "# TYPE scylla_proxies_total gauge",
+            f'scylla_proxies_total {stats["total"]}',
+            "",
+            "# HELP scylla_proxies_active Number of active proxies",
+            "# TYPE scylla_proxies_active gauge",
+            f'scylla_proxies_active {stats["active"]}',
+            "",
+            "# HELP scylla_proxies_inactive Number of inactive proxies",
+            "# TYPE scylla_proxies_inactive gauge",
+            f'scylla_proxies_inactive {stats["inactive"]}',
+            "",
+            "# HELP scylla_proxies_pending Number of pending proxies",
+            "# TYPE scylla_proxies_pending gauge",
+            f'scylla_proxies_pending {stats["checking"]}',
+            "",
+            "# HELP scylla_proxies_by_anonymity Proxies by anonymity level",
+            "# TYPE scylla_proxies_by_anonymity gauge",
+            f'scylla_proxies_by_anonymity{{level="transparent"}} {stats["anonymity"]["transparent"]}',
+            f'scylla_proxies_by_anonymity{{level="anonymous"}} {stats["anonymity"]["anonymous"]}',
+            f'scylla_proxies_by_anonymity{{level="elite"}} {stats["anonymity"]["elite"]}',
+            "",
+            "# HELP scylla_avg_speed_seconds Average proxy response speed",
+            "# TYPE scylla_avg_speed_seconds gauge",
+            f'scylla_avg_speed_seconds {stats["avg_speed"] or 0}',
+            "",
+            "# HELP scylla_task_executions_total Task execution counts",
+            "# TYPE scylla_task_executions_total counter",
+        ]
+
+        for task in tasks_status:
+            task_name = task["name"].lower().replace(" ", "_")
+            lines.append(
+                f'scylla_task_executions_total{{task="{task_name}",status="success"}} {task["execution_count"]}'
+            )
+            lines.append(
+                f'scylla_task_executions_total{{task="{task_name}",status="failure"}} {task["failure_count"]}'
+            )
+
+        lines.extend(
+            [
+                "",
+                "# HELP scylla_task_running Task running status",
+                "# TYPE scylla_task_running gauge",
+            ]
+        )
+
+        for task in tasks_status:
+            task_name = task["name"].lower().replace(" ", "_")
+            lines.append(
+                f'scylla_task_running{{task="{task_name}"}} {1 if task["is_running"] else 0}'
+            )
+
+        return response.text("\n".join(lines), content_type="text/plain; charset=utf-8")
+
+    except Exception as e:
+        logger.error(f"Error in get_metrics: {e}", exc_info=True)
+        return response.text(f"# Error: {e}", status=500)
+
+
+@api_bp.route("/tasks", methods=["GET"])
+async def get_tasks_status(request: Request):
+    """Get status of all scheduled tasks.
+
+    Returns:
+        JSON response with task execution statistics
+    """
+    from scylla.core.scheduler import scheduler
+
+    try:
+        tasks = list(scheduler.get_tasks_status())
+        return response.json({"success": True, "data": tasks})
+    except Exception as e:
+        logger.error(f"Error in get_tasks_status: {e}", exc_info=True)
+        return response.json({"success": False, "error": str(e)}, status=500)

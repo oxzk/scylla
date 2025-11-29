@@ -17,6 +17,9 @@ from scylla import logger, c
 from scylla.core.config import settings
 from scylla.models import Proxy
 
+# Type alias for validation result
+ValidationResult = Tuple[int, bool, Optional[float], Optional[str]]
+
 
 class ValidatorService:
     """Proxy validator with concurrent batch validation support.
@@ -25,10 +28,7 @@ class ValidatorService:
     common proxy protocols. Implements semaphore-based concurrency control
     for efficient batch validation.
 
-    Attributes:
-        test_url: URL used for proxy validation
-        timeout: Request timeout in seconds
-        max_concurrent: Maximum concurrent validations
+    Each batch validation creates its own session to avoid multi-worker conflicts.
     """
 
     def __init__(self):
@@ -36,61 +36,74 @@ class ValidatorService:
         self.test_url = settings.proxy_test_url
         self.timeout = settings.proxy_test_timeout
         self.max_concurrent = settings.max_concurrent_validators
-        self._session: Optional[AsyncSession] = None
 
-    @property
-    def current_session(self) -> AsyncSession:
-        """Get or create shared AsyncSession with lazy initialization.
-
-        Returns:
-            AsyncSession instance for making requests
-        """
-        if self._session is None:
-            self._session = AsyncSession()
-        return self._session
-
-    async def close(self) -> None:
-        """Close AsyncSession and cleanup resources."""
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
-
-    async def validate_proxy(
-        self, proxy: Proxy, test_url: Optional[str] = None
-    ) -> Tuple[int, bool, Optional[float], Optional[str]]:
-        """Validate a single proxy by making a test request.
+    def _detect_anonymity(self, headers: dict, proxy_ip: str) -> str:
+        """Detect proxy anonymity level from response headers.
 
         Args:
-            proxy: Proxy object to validate
-            test_url: Optional test URL, defaults to configured URL
+            headers: Response headers dictionary
+            proxy_ip: The proxy's IP address
 
         Returns:
-            Tuple of (proxy_id, success, response_time, anonymity):
-                - proxy_id: ID of the validated proxy (0 if no ID)
-                - success: Whether validation succeeded
-                - response_time: Response time in seconds (None if failed)
-                - anonymity: Anonymity level (transparent/anonymous/elite, None if failed)
+            Anonymity level: 'transparent', 'anonymous', or 'elite'
+        """
+        headers_lower = {k.lower(): v for k, v in headers.items()}
+        suspicious_headers = [
+            "x-forwarded-for",
+            "x-real-ip",
+            "via",
+            "x-proxy-id",
+            "proxy-connection",
+            "forwarded",
+            "client-ip",
+            "x-client-ip",
+        ]
+
+        # Check if proxy IP is exposed in any header
+        for header_value in headers.values():
+            if proxy_ip in str(header_value):
+                return "transparent"
+
+        # Check for proxy-revealing headers
+        for header_name in suspicious_headers:
+            if headers_lower.get(header_name):
+                return "anonymous"
+
+        return "elite"
+
+    async def _validate_single(
+        self,
+        session: AsyncSession,
+        proxy: Proxy,
+        task_name: str = "",
+    ) -> ValidationResult:
+        """Validate a single proxy using provided session.
+
+        Args:
+            session: AsyncSession to use for the request
+            proxy: Proxy object to validate
+            task_name: Optional task name for logging context
+
+        Returns:
+            Tuple of (proxy_id, success, response_time, anonymity)
         """
         if not proxy.id:
-            logger.warning(f"Proxy {proxy.url} has no ID, skipping validation")
             return (0, False, None, None)
 
-        url = test_url or self.test_url
-        proxy_url = proxy.url
+        url = self.test_url
         start_time = time.time()
+        task_prefix = f"[{task_name}] " if task_name else ""
 
         try:
-            # Make request through proxy
-            response = await self.current_session.request(
+            response = await session.request(
                 method="GET",
                 url=url,
-                proxy=proxy_url,
+                proxy=proxy.url,
                 timeout=self.timeout,
-                verify=False,  # Skip SSL verification for proxy compatibility
+                verify=False,
                 allow_redirects=True,
             )
 
-            # Validate response
             if response.ok:
                 response_time = time.time() - start_time
                 headers = dict(response.headers)
@@ -98,66 +111,44 @@ class ValidatorService:
 
                 if url == "https://httpbin.org/get":
                     data = response.json()
-                    headers = data["headers"]
-                    origin = data["origin"]
+                    headers = data.get("headers", {})
+                    origin = data.get("origin", proxy.ip)
 
-                # Detect anonymity level from response headers
                 anonymity = self._detect_anonymity(headers, origin)
 
                 logger.info(
-                    f"{c.GREEN}✓{c.END} Proxy {proxy.source} {proxy.url} validated successfully, "
+                    f"{task_prefix}{c.GREEN}✓{c.END} {proxy.url} - "
                     f"speed: {response_time:.2f}s, anonymity: {c.CYAN}{anonymity}{c.END}"
                 )
                 return (proxy.id, True, response_time, anonymity)
             else:
                 logger.info(
-                    f"{c.RED}✗{c.END} Proxy {proxy.source} {proxy.url} returned status {response.status_code}"
+                    f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - status: {response.status_code}"
                 )
                 return (proxy.id, False, None, None)
 
         except asyncio.TimeoutError:
             logger.info(
-                f"{c.RED}✗{c.END} Proxy {proxy.source} {proxy.url} timed out after {self.timeout}s"
+                f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - timeout after {self.timeout}s"
             )
             return (proxy.id, False, None, None)
         except Exception as e:
             logger.info(
-                f"{c.RED}✗{c.END} Proxy {proxy.source} {proxy.url} validation failed: {type(e).__name__}"
+                f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - {type(e).__name__}"
             )
             return (proxy.id, False, None, None)
 
-    def _detect_anonymity(self, headers: dict, proxy_ip: str) -> str:
-        headers_lower = {k.lower(): v for k, v in headers.items()}
-        suspicious_headers = [
-            "X-Forwarded-For",
-            "X-Real-Ip",
-            "Via",
-            "X-Proxy-Id",
-            "Proxy-Connection",
-            "Forwarded",
-            "Client-Ip",
-            "X-Client-Ip",
-        ]
-
-        for header_name, header_value in headers.items():
-            if proxy_ip in header_value:
-                return "transparent"
-
-        for header_name in suspicious_headers:
-            v = headers_lower.get(header_name.lower())
-            if v:
-                return "anonymous"
-
-        return "elite"
-
-    async def validate_batch(self, proxies: List[Proxy]) -> Dict[str, Any]:
+    async def validate_batch(
+        self, proxies: List[Proxy], task_name: str = ""
+    ) -> Dict[str, Any]:
         """Batch validate proxies with concurrent execution.
 
+        Creates a dedicated session for this batch to avoid multi-worker conflicts.
         Uses semaphore to control concurrency and prevent resource exhaustion.
-        All proxies are validated concurrently up to max_concurrent limit.
 
         Args:
             proxies: List of proxies to validate
+            task_name: Optional task name for logging context
 
         Returns:
             Dictionary with validation statistics:
@@ -169,39 +160,35 @@ class ValidatorService:
         if not proxies:
             return {"total": 0, "success": 0, "failed": 0, "results": []}
 
-        # Semaphore for concurrency control
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def validate_with_semaphore(
-            proxy: Proxy,
-        ) -> Tuple[int, bool, Optional[float], Optional[str]]:
-            """Validate proxy with semaphore protection."""
+            session: AsyncSession, proxy: Proxy
+        ) -> ValidationResult:
             async with semaphore:
-                return await self.validate_proxy(proxy)
+                return await self._validate_single(session, proxy, task_name)
 
-        # Execute all validations concurrently
-        results = await asyncio.gather(
-            *[validate_with_semaphore(proxy) for proxy in proxies],
-            return_exceptions=True,
-        )
+        # Use dedicated session for this batch
+        async with AsyncSession() as session:
+            results = await asyncio.gather(
+                *[validate_with_semaphore(session, proxy) for proxy in proxies],
+                return_exceptions=True,
+            )
 
-        # Process results and collect statistics
+        # Process results
         success_count = 0
         failed_count = 0
-        validation_results = []
+        validation_results: List[ValidationResult] = []
 
         for result in results:
             if isinstance(result, Exception):
-                # Exception during validation
                 failed_count += 1
                 logger.error(f"Validation exception: {type(result).__name__}")
                 continue
 
             if isinstance(result, tuple) and len(result) == 4:
-                proxy_id, success, speed, anonymity = result
-                validation_results.append((proxy_id, success, speed, anonymity))
-
-                if success:
+                validation_results.append(result)
+                if result[1]:  # is_success
                     success_count += 1
                 else:
                     failed_count += 1

@@ -4,7 +4,6 @@ Provides shared validation logic for both pending and successful proxy validatio
 """
 
 # Standard library imports
-import os
 from datetime import datetime
 from typing import AsyncIterator
 
@@ -29,42 +28,30 @@ async def execute_validation(
     """
     try:
         start_time = datetime.now()
-        pid = os.getpid()
 
         # Collect proxies from iterator
         proxies = [p async for p in proxy_iterator]
 
         if not proxies:
-            logger.info(f"[PID:{pid}] {c.YELLOW}{no_proxies_message}{c.END}")
+            logger.info(f"{c.YELLOW}{no_proxies_message}{c.END}")
             return
 
-        logger.info(
-            f"[PID:{pid}] {c.CYAN}Starting {task_name} for {len(proxies)} proxies{c.END}"
-        )
+        logger.info(f"{c.CYAN}Starting {task_name} for {len(proxies)} proxies{c.END}")
 
         # Batch validate proxies with concurrent execution
-        stats = await validator_service.validate_batch(proxies)
+        stats = await validator_service.validate_batch(proxies, task_name=task_name)
 
-        # Update database with validation results
-        for proxy_id, is_success, response_time, anonymity in stats["results"]:
-            if proxy_id:
-                await proxy_service.record_validation_result(
-                    proxy_id=proxy_id,
-                    is_success=is_success,
-                    response_time=response_time,
-                    anonymity=anonymity,
-                )
+        # Batch update database with validation results
+        if stats["results"]:
+            await proxy_service.batch_record_validation_results(stats["results"])
 
         execution_time = (datetime.now() - start_time).total_seconds()
         logger.info(
-            f"[PID:{pid}] {c.GREEN}{task_name} completed{c.END} - "
+            f"{c.GREEN}{task_name} completed{c.END} - "
             f"success: {c.GREEN}{stats['success']}{c.END}, "
             f"failed: {c.RED}{stats['failed']}{c.END}, "
             f"total: {c.CYAN}{stats['total']}{c.END}, "
             f"time: {c.BLUE}{execution_time:.2f}s{c.END}"
         )
     except Exception as e:
-        pid = os.getpid()
-        logger.error(f"[PID:{pid}] {task_name} failed: {e}", exc_info=True)
-    finally:
-        await validator_service.close()
+        logger.error(f"{task_name} failed: {e}", exc_info=True)
