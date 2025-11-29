@@ -6,12 +6,13 @@ error recovery, and concurrent execution support.
 
 # Standard library imports
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, List, Optional, Dict, Any
 
 # Local imports
 from scylla import logger, root_logger, c
 from scylla.core.config import settings
+from scylla.core.redis_client import redis_client
 from scylla.tasks import (
     crawl_task,
     validate_pending_task,
@@ -29,6 +30,7 @@ class Task:
         func: Async callable to execute when the task runs
         interval: Time interval in seconds between executions
         last_run: Timestamp of the last successful execution
+        next_run: Timestamp of the next scheduled execution
         is_running: Flag to prevent concurrent executions of the same task
         execution_count: Total number of successful executions
         failure_count: Total number of failed executions
@@ -39,42 +41,49 @@ class Task:
         self.func = func
         self.interval = interval
         self.last_run: Optional[datetime] = None
+        self.next_run: Optional[datetime] = None
         self.is_running = False
         self.execution_count = 0
         self.failure_count = 0
 
-    async def run(self) -> bool:
-        """Execute the task with concurrency protection.
+    async def run(self) -> None:
+        """Execute the task with concurrency protection and improved scheduling.
 
         Skips execution if the previous run is still in progress to prevent
         overlapping executions. Logs execution lifecycle and captures errors.
 
-        Returns:
-            True if execution succeeded, False otherwise
+        Uses fixed-interval scheduling to prevent time drift accumulation.
         """
         colored_name = f"{c.BLUE}{self.name}{c.END}"
         if self.is_running:
             logger.warning(
                 f"[{colored_name}] Previous execution still running, skipping"
             )
-            return False
+            return
 
         self.is_running = True
         start_time = datetime.now()
+
+        # Pre-calculate next run time (based on scheduled time, not completion time, to prevent time drift)
+        if self.next_run:
+            # Calculate based on previous scheduled time to maintain fixed interval
+            self.next_run = self.next_run + timedelta(seconds=self.interval)
+        else:
+            # First run, calculate based on current time
+            self.next_run = start_time + timedelta(seconds=self.interval)
 
         try:
             root_logger.debug(f"[{colored_name}] Execution started")
             await self.func()
 
             execution_time = (datetime.now() - start_time).total_seconds()
-            self.last_run = datetime.now()
+            self.last_run = start_time  # Use start time instead of end time
             self.execution_count += 1
 
-            root_logger.debug(
+            logger.info(
                 f"[{colored_name}] {c.GREEN}✓{c.END} Completed in {execution_time:.2f}s "
                 f"(total: {self.execution_count}, failures: {self.failure_count})"
             )
-            return True
 
         except Exception as e:
             self.failure_count += 1
@@ -84,10 +93,33 @@ class Task:
                 f"[{colored_name}] {c.RED}✗{c.END} Failed after {execution_time:.2f}s: {e}",
                 exc_info=True,
             )
-            return False
 
         finally:
             self.is_running = False
+
+            # Update Redis asynchronously (for both success and failure)
+            self._schedule_redis_update(execution_time)
+
+    def _schedule_redis_update(self, execution_time: float) -> None:
+        """Schedule Redis update as a background task.
+
+        Args:
+            execution_time: Task execution time in seconds
+        """
+
+        # Create background task (error handling is done in redis_client)
+        task = asyncio.create_task(
+            redis_client.update_task_info_batch(
+                task_name=self.name,
+                next_run=self.next_run,
+                last_run=self.last_run,
+                execution_count=self.execution_count,
+                failure_count=self.failure_count,
+                execution_time=execution_time,
+            )
+        )
+        # Prevent garbage collection and suppress exceptions
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def get_status(self) -> Dict[str, Any]:
         """Get current task status and statistics.
@@ -99,19 +131,10 @@ class Task:
             "name": self.name,
             "interval": self.interval,
             "last_run": self.last_run.isoformat() if self.last_run else None,
+            "next_run": self.next_run.isoformat() if self.next_run else None,
             "is_running": self.is_running,
             "execution_count": self.execution_count,
             "failure_count": self.failure_count,
-            "success_rate": (
-                round(
-                    self.execution_count
-                    / (self.execution_count + self.failure_count)
-                    * 100,
-                    2,
-                )
-                if (self.execution_count + self.failure_count) > 0
-                else 0.0
-            ),
         }
 
 
@@ -168,17 +191,16 @@ class Scheduler:
                     interval=settings.update_country_interval,
                 )
 
-        # Add validation tasks for all workers
+                self.add_task(
+                    name="Success Proxy Validation",
+                    func=validate_success_task,
+                    interval=settings.validate_success_interval,
+                )
+
         self.add_task(
             name="Pending Proxy Validation",
             func=validate_pending_task,
             interval=settings.validate_interval,
-        )
-
-        self.add_task(
-            name="Success Proxy Validation",
-            func=validate_success_task,
-            interval=settings.validate_success_interval,
         )
 
     async def start(self) -> None:
@@ -186,6 +208,25 @@ class Scheduler:
         if not self.tasks:
             logger.warning("No tasks scheduled for execution")
             return
+
+        # Connect to Redis
+        await redis_client.connect()
+
+        # Load task state from Redis
+        for task in self.tasks:
+            # Restore task statistics and schedule
+            stats = await redis_client.get_task_stats(task.name)
+            if stats:
+                task.next_run = stats.get("next_run")
+                task.execution_count = stats["execution_count"]
+                task.failure_count = stats["failure_count"]
+                task.last_run = stats["last_run"]
+                logger.debug(
+                    f"Restored state for {task.name}: "
+                    f"next_run={task.next_run.isoformat() if task.next_run else 'None'}, "
+                    f"executions={stats['execution_count']}, "
+                    f"failures={stats['failure_count']}"
+                )
 
         self.running = True
         logger.info(f"{c.GREEN}Scheduler started{c.END} with {len(self.tasks)} task(s)")
@@ -196,27 +237,57 @@ class Scheduler:
     async def _run_task(self, task: Task) -> None:
         """Execute the task loop for a single scheduled task.
 
-        Runs the task immediately on first call, then enters a loop that
-        waits for the specified interval before each subsequent execution.
+        Flow:
+        1. Check if next_run exists (from Redis or previous execution)
+        2. If next_run is in the future -> wait until that time
+        3. Execute the task (which sets the next next_run)
+        4. Repeat
 
         Args:
             task: Task instance to execute
         """
-        # Execute immediately on first startup
-        await task.run()
+        try:
+            while self.running:
+                # Calculate wait time if next_run is scheduled
+                if task.next_run:
+                    now = datetime.now()
+                    wait_seconds = (task.next_run - now).total_seconds()
 
-        while self.running:
-            logger.info(
-                f"{c.BLUE}[{task.name}] Next execution in {task.interval}s{c.END}"
-            )
-            await asyncio.sleep(task.interval)
+                    if wait_seconds > 0:
+                        # 根据等待时间调整日志级别
+                        if wait_seconds > 300:  # > 5分钟用 info
+                            next_time = task.next_run.strftime("%H:%M:%S")
+                            logger.info(
+                                f"{c.BLUE}[{task.name}]{c.END} Next execution at "
+                                f"{c.CYAN}{next_time}{c.END} "
+                                f"(in {c.YELLOW}{wait_seconds:.0f}s{c.END})"
+                            )
+                        elif wait_seconds > 30:  # 30秒-5分钟用 debug
+                            next_time = task.next_run.strftime("%H:%M:%S")
+                            root_logger.debug(
+                                f"[{task.name}] Next execution at {next_time} (in {wait_seconds:.0f}s)"
+                            )
+                        await asyncio.sleep(wait_seconds)
 
-            if self.running:
+                # Execute the task (sets next_run for next iteration)
                 await task.run()
+
+        except asyncio.CancelledError:
+            logger.info(f"{c.BLUE}[{task.name}]{c.END} Task cancelled gracefully")
+            raise
+        except Exception as e:
+            logger.error(
+                f"{c.RED}[{task.name}]{c.END} Task loop crashed: {e}", exc_info=True
+            )
+            # Don't re-raise to prevent one task from crashing the entire scheduler
 
     async def stop(self) -> None:
         """Stop the scheduler and all running tasks gracefully."""
         self.running = False
+
+        # Close Redis connection
+        await redis_client.close()
+
         root_logger.debug(f"{c.YELLOW}Scheduler stopped{c.END}")
 
     def get_tasks_status(self):

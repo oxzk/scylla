@@ -36,10 +36,10 @@ class Settings(BaseSettings):
         default=20, ge=1, description="Pending proxy validation interval in seconds"
     )
     validate_success_interval: int = Field(
-        default=50, ge=1, description="Success proxy re-validation interval in seconds"
+        default=60, ge=1, description="Success proxy re-validation interval in seconds"
     )
     cleanup_interval: int = Field(
-        default=7200, ge=1, description="Cleanup interval in seconds"
+        default=1200, ge=1, description="Cleanup interval in seconds"
     )
     update_country_interval: int = Field(
         default=600, ge=1, description="Country update interval in seconds"
@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     log_format: str = Field(
         default="\033[38;5;240m%(asctime)s\033[0m %(levelname)s: \033[1000D\033[26C\033[K %(message)s",
         description="Logging format string",
+    )
+
+    # Redis configuration
+    redis_url: str = Field(
+        default="redis://localhost:6379/0", description="Redis connection URL"
     )
 
     @model_validator(mode="after")
