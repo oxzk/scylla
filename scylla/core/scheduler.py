@@ -155,7 +155,7 @@ class Scheduler:
 
     async def _initialize_tasks(self) -> None:
         lock_key = "scheduler:task_initialization"
-        if await redis_client.client.set(lock_key, 1, ex=300, nx=True):
+        if await redis_client.client.set(lock_key, 1, ex=60, nx=True):
             self.add_task(
                 name="Proxy Crawl",
                 func=crawl_task,
@@ -193,12 +193,14 @@ class Scheduler:
         This should be called during application startup (before_server_start)
         to set up all necessary resources before the server starts accepting requests.
         """
-        # Initialize database connection
-
-        await db.connect()
 
         # Connect to Redis (needed for distributed lock)
         await redis_client.connect()
+
+        # Initialize database connection
+        lock_key = "scheduler:db_initialization"
+        if await redis_client.client.set(lock_key, 1, ex=60, nx=True):
+            await db.connect()
 
         # Initialize tasks with distributed lock
         await self._initialize_tasks()
