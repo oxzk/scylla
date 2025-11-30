@@ -9,27 +9,19 @@ main:
       stages:
         - name: Set up Python venv
           script: |
+            pwd
+            ls -la
             cd /workspace
             if [ ! -d ".venv" ]; then
               python3 -m venv .venv
             fi
             . .venv/bin/activate
 
-        - name: Install dependencies
-          script: |
-            pwd
-            ls -la
             pip install -r requirements.txt
 
-        - name: Run
-          script: |
             python cli.py
 
-        - name: Cleanup
-          script: |
-            echo "Validation task completed"
             rm -rf /workspace/.venv
-          condition: always()
 
 # main:
 #   push:
