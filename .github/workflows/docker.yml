@@ -6,6 +6,7 @@ on:
     paths-ignore:
       - '.github/workflows/docker.yml'
       - '.cnb.yml'
+      - 'azure-pipelines.yml'
 
 
 jobs:

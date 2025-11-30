@@ -4,7 +4,7 @@
 trigger: none
 
 schedules:
-  - cron: "*/30 * * * *"
+  - cron: "*/15 * * * *"
     displayName: Proxy Validation Schedule
     branches:
       include:
@@ -37,9 +37,9 @@ jobs:
       - script: |
           python cli.py
         displayName: "Run proxy validation CLI"
-        # env:
-        #   DB_URL: $(DB_URL)
-        #   VALIDATE_BATCH_LIMIT: 1000
+        env:
+          # DB_URL: $(SCDB_URL)
+          VALIDATE_BATCH_LIMIT: 500
         # continueOnError: "true"
 
       - script: |
