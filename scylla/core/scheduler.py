@@ -198,9 +198,7 @@ class Scheduler:
         await redis_client.connect()
 
         # Initialize database connection
-        lock_key = "scheduler:db_initialization"
-        if await redis_client.client.set(lock_key, 1, ex=60, nx=True):
-            await db.connect()
+        await db.connect()
 
         # Initialize tasks with distributed lock
         await self._initialize_tasks()
