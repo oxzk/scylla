@@ -7,7 +7,7 @@ protocols using curl_cffi for better compatibility and performance.
 # Standard library imports
 import asyncio
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 # Third-party imports
 from curl_cffi import AsyncSession
@@ -16,7 +16,10 @@ from curl_cffi import AsyncSession
 from scylla import logger, c
 from scylla.core.config import settings
 from scylla.models import Proxy
-from scylla.services.proxy_service import proxy_service
+
+
+# Type alias for validation result
+ValidationResult = Tuple[int, bool, Optional[float], Optional[str]]
 
 
 class ValidatorService:
@@ -28,6 +31,18 @@ class ValidatorService:
 
     Each batch validation creates its own session to avoid multi-worker conflicts.
     """
+
+    # Suspicious headers that may reveal proxy usage
+    SUSPICIOUS_HEADERS = [
+        "x-forwarded-for",
+        "x-real-ip",
+        "via",
+        "x-proxy-id",
+        "proxy-connection",
+        "forwarded",
+        "client-ip",
+        "x-client-ip",
+    ]
 
     def __init__(self):
         """Initialize validator with configuration from settings."""
@@ -46,24 +61,14 @@ class ValidatorService:
             Anonymity level: 'transparent', 'anonymous', or 'elite'
         """
         headers_lower = {k.lower(): v for k, v in headers.items()}
-        suspicious_headers = [
-            "x-forwarded-for",
-            "x-real-ip",
-            "via",
-            "x-proxy-id",
-            "proxy-connection",
-            "forwarded",
-            "client-ip",
-            "x-client-ip",
-        ]
 
-        # Check if proxy IP is exposed in any header
+        # Check if proxy IP is exposed in any header value
         for header_value in headers.values():
             if proxy_ip in str(header_value):
                 return "transparent"
 
         # Check for proxy-revealing headers
-        for header_name in suspicious_headers:
+        for header_name in self.SUSPICIOUS_HEADERS:
             if headers_lower.get(header_name):
                 return "anonymous"
 
@@ -73,34 +78,32 @@ class ValidatorService:
         self,
         session: AsyncSession,
         proxy: Proxy,
-        task_name: str = "",
-    ) -> bool:
-        """Validate a single proxy and update database immediately.
+    ) -> ValidationResult:
+        """Validate a single proxy and return validation result.
 
         Args:
             session: AsyncSession to use for the request
             proxy: Proxy object to validate
-            task_name: Optional task name for logging context
 
         Returns:
-            True if validation succeeded, False otherwise
+            Tuple of (proxy_id, success, response_time, anonymity):
+                - proxy_id: ID of the validated proxy (0 if no ID)
+                - success: Whether validation succeeded
+                - response_time: Response time in seconds (None if failed)
+                - anonymity: Anonymity level (transparent/anonymous/elite, None if failed)
         """
-
         if not proxy.id:
-            return False
+            return (0, False, None, None)
 
-        url = self.test_url
         start_time = time.time()
-        task_prefix = f"[{task_name}] " if task_name else ""
-
-        is_success = False
+        success = False
         response_time = None
         anonymity = None
 
         try:
             response = await session.request(
                 method="GET",
-                url=url,
+                url=self.test_url,
                 proxy=proxy.url,
                 timeout=self.timeout,
                 verify=False,
@@ -112,92 +115,81 @@ class ValidatorService:
                 headers = dict(response.headers)
                 origin = proxy.ip
 
-                if url == "https://httpbin.org/get":
+                # Extract origin from httpbin response if applicable
+                if self.test_url == "https://httpbin.org/get":
                     data = response.json()
                     headers = data.get("headers", {})
                     origin = data.get("origin", proxy.ip)
 
                 anonymity = self._detect_anonymity(headers, origin)
-                is_success = True
+                success = True
 
                 logger.info(
-                    f"{task_prefix}{c.GREEN}✓{c.END} {proxy.url} - "
+                    f"{c.GREEN}✓{c.END} {proxy.url} - "
                     f"speed: {response_time:.2f}s, anonymity: {c.CYAN}{anonymity}{c.END}"
                 )
             else:
                 logger.info(
-                    f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - status: {response.status_code}"
+                    f"{c.RED}✗{c.END} {proxy.url} - status: {response.status_code}"
                 )
 
         except asyncio.TimeoutError:
-            logger.info(
-                f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - timeout after {self.timeout}s"
-            )
+            logger.info(f"{c.RED}✗{c.END} {proxy.url} - timeout after {self.timeout}s")
         except Exception as e:
-            logger.info(
-                f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - {type(e).__name__}"
-            )
+            logger.info(f"{c.RED}✗{c.END} {proxy.url} - {type(e).__name__}")
 
-        # Update database immediately
-        try:
-            await proxy_service.record_validation_result(
-                proxy.id, is_success, response_time, anonymity
-            )
-        except Exception as e:
-            logger.error(f"Failed to update database for proxy {proxy.id}: {e}")
-            return False
+        return (proxy.id, success, response_time, anonymity)
 
-        return is_success
-
-    async def validate_batch(
-        self, proxies: List[Proxy], task_name: str = ""
-    ) -> Dict[str, Any]:
-        """Batch validate proxies with concurrent execution and immediate database updates.
+    async def validate_batch(self, proxies: List[Proxy]) -> Dict[str, Any]:
+        """Batch validate proxies with concurrent execution.
 
         Creates a dedicated session for this batch to avoid multi-worker conflicts.
         Uses semaphore to control concurrency and prevent resource exhaustion.
-        Database updates happen immediately within each validation.
+        Returns validation results without performing database updates.
 
         Args:
             proxies: List of proxies to validate
-            task_name: Optional task name for logging context
 
         Returns:
-            Dictionary with validation statistics:
+            Dictionary with validation statistics and results:
                 - total: Total number of proxies validated
                 - success: Number of successful validations
                 - failed: Number of failed validations
+                - results: List of (proxy_id, success, response_time, anonymity) tuples
         """
         if not proxies:
-            return {"total": 0, "success": 0, "failed": 0}
+            return {"total": 0, "success": 0, "failed": 0, "results": []}
 
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        success_count = 0
-        failed_count = 0
 
-        async def validate_with_semaphore(session: AsyncSession, proxy: Proxy) -> bool:
+        async def validate_with_semaphore(session: AsyncSession, proxy: Proxy):
             async with semaphore:
-                return await self._validate_single(session, proxy, task_name)
+                return await self._validate_single(session, proxy)
 
         # Use dedicated session for this batch
         async with AsyncSession() as session:
-            # Create all validation tasks
             tasks = [
                 asyncio.create_task(validate_with_semaphore(session, proxy))
                 for proxy in proxies
             ]
-
-            # Wait for all tasks to complete and collect results
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Count statistics after all tasks complete
-            for result in results:
-                if isinstance(result, Exception):
-                    failed_count += 1
-                    logger.error(
-                        f"Validation exception: {type(result).__name__}: {result}"
-                    )
-                elif result:
+        # Process results
+        success_count = 0
+        failed_count = 0
+        validation_results = []
+
+        for result in results:
+            if isinstance(result, Exception):
+                failed_count += 1
+                logger.error(f"Validation exception: {type(result).__name__}")
+                continue
+
+            if isinstance(result, tuple) and len(result) == 4:
+                proxy_id, success, response_time, anonymity = result
+                validation_results.append((proxy_id, success, response_time, anonymity))
+
+                if success:
                     success_count += 1
                 else:
                     failed_count += 1
@@ -206,6 +198,7 @@ class ValidatorService:
             "total": len(proxies),
             "success": success_count,
             "failed": failed_count,
+            "results": validation_results,
         }
 
 
