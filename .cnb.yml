@@ -17,6 +17,8 @@ main:
 
         - name: Install dependencies
           script: |
+            pwd
+            ls -la
             pip install -r requirements.txt
 
         - name: Run
