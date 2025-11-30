@@ -10,7 +10,6 @@ from typing import AsyncIterator
 # Local imports
 from scylla import logger, c
 from scylla.models.proxy import Proxy
-from scylla.services.proxy_service import proxy_service
 from scylla.services.validator_service import validator_service
 
 
@@ -39,11 +38,8 @@ async def execute_validation(
         logger.info(f"{c.CYAN}Starting {task_name} for {len(proxies)} proxies{c.END}")
 
         # Batch validate proxies with concurrent execution
+        # Database updates happen immediately after each validation
         stats = await validator_service.validate_batch(proxies, task_name=task_name)
-
-        # Batch update database with validation results
-        if stats["results"]:
-            await proxy_service.batch_record_validation_results(stats["results"])
 
         execution_time = (datetime.now() - start_time).total_seconds()
         logger.info(

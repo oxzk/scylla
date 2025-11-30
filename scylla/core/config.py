@@ -75,7 +75,7 @@ class Settings(BaseSettings):
         default="https://httpbin.org/get", description="URL for testing proxies"
     )
     proxy_test_timeout: int = Field(
-        default=15, ge=1, description="Proxy test timeout in seconds"
+        default=25, ge=1, description="Proxy test timeout in seconds"
     )
 
     # Logging format

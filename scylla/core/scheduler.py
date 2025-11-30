@@ -12,6 +12,7 @@ from typing import Callable, List, Optional, Dict, Any
 # Local imports
 from scylla import logger, root_logger, c
 from scylla.core.config import settings
+from scylla.core.database import db
 from scylla.core.redis_client import redis_client
 from scylla.tasks import (
     crawl_task,
@@ -63,14 +64,7 @@ class Task:
 
         self.is_running = True
         start_time = datetime.now()
-
-        # Pre-calculate next run time (based on scheduled time, not completion time, to prevent time drift)
-        if self.next_run:
-            # Calculate based on previous scheduled time to maintain fixed interval
-            self.next_run = self.next_run + timedelta(seconds=self.interval)
-        else:
-            # First run, calculate based on current time
-            self.next_run = start_time + timedelta(seconds=self.interval)
+        execution_time = 0.0
 
         try:
             root_logger.debug(f"[{colored_name}] Execution started")
@@ -97,19 +91,12 @@ class Task:
         finally:
             self.is_running = False
 
-            # Update Redis asynchronously (for both success and failure)
-            self._schedule_redis_update(execution_time)
+            if self.next_run:
+                self.next_run = self.next_run + timedelta(seconds=self.interval)
+            else:
+                self.next_run = start_time + timedelta(seconds=self.interval)
 
-    def _schedule_redis_update(self, execution_time: float) -> None:
-        """Schedule Redis update as a background task.
-
-        Args:
-            execution_time: Task execution time in seconds
-        """
-
-        # Create background task (error handling is done in redis_client)
-        task = asyncio.create_task(
-            redis_client.update_task_info_batch(
+            await redis_client.update_task_info_batch(
                 task_name=self.name,
                 next_run=self.next_run,
                 last_run=self.last_run,
@@ -117,9 +104,6 @@ class Task:
                 failure_count=self.failure_count,
                 execution_time=execution_time,
             )
-        )
-        # Prevent garbage collection and suppress exceptions
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def get_status(self) -> Dict[str, Any]:
         """Get current task status and statistics.
@@ -169,48 +153,58 @@ class Scheduler:
         self.tasks.append(task)
         return task
 
-    def _initialize_tasks(self, app) -> None:
-        with app.shared_ctx.lock:
-            if app.shared_ctx.queue.empty():
-                app.shared_ctx.queue.put(app.m.pid)
-                self.add_task(
-                    name="Proxy Crawl",
-                    func=crawl_task,
-                    interval=settings.crawl_interval,
-                )
+    async def _initialize_tasks(self) -> None:
+        lock_key = "scheduler:task_initialization"
+        if await redis_client.client.set(lock_key, 1, ex=300, nx=True):
+            self.add_task(
+                name="Proxy Crawl",
+                func=crawl_task,
+                interval=settings.crawl_interval,
+            )
 
-                self.add_task(
-                    name="Proxy Cleanup",
-                    func=cleanup_task,
-                    interval=settings.cleanup_interval,
-                )
+            self.add_task(
+                name="Proxy Cleanup",
+                func=cleanup_task,
+                interval=settings.cleanup_interval,
+            )
 
-                self.add_task(
-                    name="Country Update",
-                    func=update_country_task,
-                    interval=settings.update_country_interval,
-                )
+            self.add_task(
+                name="Country Update",
+                func=update_country_task,
+                interval=settings.update_country_interval,
+            )
 
-                self.add_task(
-                    name="Success Proxy Validation",
-                    func=validate_success_task,
-                    interval=settings.validate_success_interval,
-                )
+            self.add_task(
+                name="Success Proxy Validation",
+                func=validate_success_task,
+                interval=settings.validate_success_interval,
+            )
 
+        # Each worker gets its own pending validation task
         self.add_task(
             name="Pending Proxy Validation",
             func=validate_pending_task,
             interval=settings.validate_interval,
         )
 
-    async def start(self) -> None:
-        """Start the scheduler and begin executing tasks."""
-        if not self.tasks:
-            logger.warning("No tasks scheduled for execution")
-            return
+    async def initialize(self) -> None:
+        """Initialize scheduler resources (database, Redis, tasks).
 
-        # Connect to Redis
+        This should be called during application startup (before_server_start)
+        to set up all necessary resources before the server starts accepting requests.
+        """
+        # Initialize database connection
+
+        await db.connect()
+
+        # Connect to Redis (needed for distributed lock)
         await redis_client.connect()
+
+        # Initialize tasks with distributed lock
+        await self._initialize_tasks()
+
+        if not self.tasks:
+            return
 
         # Load task state from Redis
         for task in self.tasks:
@@ -228,8 +222,22 @@ class Scheduler:
                     f"failures={stats['failure_count']}"
                 )
 
+        logger.debug(
+            f"{c.GREEN}Scheduler initialized{c.END} with {len(self.tasks)} task(s)"
+        )
+
+    async def start(self) -> None:
+        """Start executing scheduled tasks.
+
+        This should be called after initialize() to begin task execution.
+        Typically called during after_server_start.
+        """
+        if not self.tasks:
+            logger.warning("No tasks scheduled for execution.")
+            return
+
         self.running = True
-        logger.info(f"{c.GREEN}Scheduler started{c.END} with {len(self.tasks)} task(s)")
+        logger.info(f"{c.GREEN}Scheduler started{c.END}")
 
         # Create independent coroutine for each task to allow parallel execution
         await asyncio.gather(*[self._run_task(task) for task in self.tasks])
@@ -254,19 +262,13 @@ class Scheduler:
                     wait_seconds = (task.next_run - now).total_seconds()
 
                     if wait_seconds > 0:
-                        # 根据等待时间调整日志级别
-                        if wait_seconds > 300:  # > 5分钟用 info
-                            next_time = task.next_run.strftime("%H:%M:%S")
-                            logger.info(
-                                f"{c.BLUE}[{task.name}]{c.END} Next execution at "
-                                f"{c.CYAN}{next_time}{c.END} "
-                                f"(in {c.YELLOW}{wait_seconds:.0f}s{c.END})"
-                            )
-                        elif wait_seconds > 30:  # 30秒-5分钟用 debug
-                            next_time = task.next_run.strftime("%H:%M:%S")
-                            root_logger.debug(
-                                f"[{task.name}] Next execution at {next_time} (in {wait_seconds:.0f}s)"
-                            )
+                        next_time = task.next_run.strftime("%H:%M:%S")
+                        logger.info(
+                            f"{c.BLUE}[{task.name}]{c.END} Next execution at "
+                            f"{c.CYAN}{next_time}{c.END} "
+                            f"(in {c.YELLOW}{wait_seconds:.0f}s{c.END})"
+                        )
+
                         await asyncio.sleep(wait_seconds)
 
                 # Execute the task (sets next_run for next iteration)
@@ -282,13 +284,13 @@ class Scheduler:
             # Don't re-raise to prevent one task from crashing the entire scheduler
 
     async def stop(self) -> None:
-        """Stop the scheduler and all running tasks gracefully."""
         self.running = False
 
-        # Close Redis connection
+        await db.close()
+
         await redis_client.close()
 
-        root_logger.debug(f"{c.YELLOW}Scheduler stopped{c.END}")
+        logger.info(f"{c.GREEN}✓{c.END} Scheduler stopped")
 
     def get_tasks_status(self):
         """Get status of all registered tasks.

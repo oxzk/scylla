@@ -10,53 +10,30 @@ from typing import AsyncGenerator, List, Optional, Tuple
 
 # Local imports
 from scylla import logger
-from scylla.core.database import Database
+from scylla.core.database import db
 from scylla.models.proxy import Proxy, ProxyStatus
-
-# Type alias for validation result tuple
-ValidationResult = Tuple[int, bool, Optional[float], Optional[str]]
 
 
 class ProxyService:
     """Service for managing proxy pool operations.
 
-    This service follows a singleton pattern with dependency injection for the
-    database instance. The database must be initialized via _initialize_db()
-    before using any methods that interact with the database.
-
-    Attributes:
-        db: Database instance injected via _initialize_db(), shared across the application
+    This service uses the global database instance for all operations.
+    Database connection is automatically managed and reconnected if needed.
 
     Example:
         >>> from services.proxy_service import proxy_service
-        >>> proxy_service._initialize_db(db)
         >>> proxies = await proxy_service.get_active_proxies(limit=10)
     """
 
-    def __init__(self):
-        self.db: Optional[Database] = None
-
-    def _initialize_db(self, db: Database):
-        """Initialize the service with a database instance.
-
-        This method should be called once during application startup to inject
-        the shared database instance. This ensures the service uses the same
-        database connection pool throughout the application lifecycle.
-
-        Args:
-            db: Database instance to use for all database operations
-        """
-        self.db = db
-
     def _ensure_db(self):
-        """Ensure database is initialized before operations.
+        """Ensure database connection exists.
 
-        Raises:
-            RuntimeError: If database has not been initialized via init_db()
+        Raises an error if database is not connected. Database should be
+        initialized during application startup via scheduler.start().
         """
-        if self.db is None:
+        if db.pool is None:
             raise RuntimeError(
-                "Database not initialized. Call init_db() before using ProxyService."
+                "Database not initialized. Ensure scheduler.start() was called."
             )
 
     def _row_to_proxy(self, row) -> Proxy:
@@ -105,7 +82,7 @@ class ProxyService:
         """
 
         try:
-            return await self.db.fetchval(
+            return await db.fetchval(
                 query,
                 proxy.ip,
                 proxy.port,
@@ -147,7 +124,7 @@ class ProxyService:
                 for p in proxies
             ]
 
-            async with self.db.pool.acquire() as conn:
+            async with db.pool.acquire() as conn:
                 await conn.executemany(query, batch_data)
 
             return len(proxies)
@@ -180,7 +157,7 @@ class ProxyService:
         query = """
             UPDATE proxies 
             SET 
-                success_count = CASE WHEN $2 THEN success_count + 1 ELSE success_count END,
+                success_count = CASE WHEN $2 THEN success_count + 1 ELSE 0 END,
                 fail_count = CASE WHEN $2 THEN 0 ELSE fail_count + 1 END,
                 last_checked = NOW(),
                 last_success = CASE WHEN $2 THEN NOW() ELSE last_success END,
@@ -190,7 +167,7 @@ class ProxyService:
                 updated_at = NOW()
             WHERE id = $1
         """
-        await self.db.execute(
+        await db.execute(
             query,
             proxy_id,
             is_success,
@@ -198,79 +175,6 @@ class ProxyService:
             target_status,
             anonymity,
         )
-
-    async def batch_record_validation_results(
-        self, results: List[ValidationResult]
-    ) -> int:
-        """Batch record validation results using optimized bulk update.
-
-        Args:
-            results: List of (proxy_id, is_success, response_time, anonymity) tuples
-
-        Returns:
-            Number of updated records
-        """
-        if not results:
-            return 0
-
-        self._ensure_db()
-
-        # Separate success and failure results for batch processing
-        success_data = []
-        failure_ids = []
-
-        for proxy_id, is_success, response_time, anonymity in results:
-            if not proxy_id:
-                continue
-            if is_success:
-                speed = round(response_time, 2) if response_time else None
-                success_data.append((proxy_id, speed, anonymity or "unknown"))
-            else:
-                failure_ids.append(proxy_id)
-
-        updated = 0
-
-        # Batch update successful proxies
-        if success_data:
-            ids = [d[0] for d in success_data]
-            speeds = [d[1] for d in success_data]
-            anonymities = [d[2] for d in success_data]
-
-            query = f"""
-                UPDATE proxies SET 
-                    success_count = success_count + 1,
-                    fail_count = 0,
-                    last_checked = NOW(),
-                    last_success = NOW(),
-                    speed = data.speed,
-                    anonymity = data.anonymity,
-                    status = {int(ProxyStatus.SUCCESS)},
-                    updated_at = NOW()
-                FROM (
-                    SELECT 
-                        unnest($1::int[]) as id,
-                        unnest($2::float[]) as speed,
-                        unnest($3::text[]) as anonymity
-                ) as data
-                WHERE proxies.id = data.id
-            """
-            result = await self.db.execute(query, ids, speeds, anonymities)
-            updated += int(result.split()[-1]) if result else 0
-
-        # Batch update failed proxies
-        if failure_ids:
-            query = f"""
-                UPDATE proxies SET 
-                    fail_count = fail_count + 1,
-                    last_checked = NOW(),
-                    status = {int(ProxyStatus.FAILED)},
-                    updated_at = NOW()
-                WHERE id = ANY($1::int[])
-            """
-            result = await self.db.execute(query, failure_ids)
-            updated += int(result.split()[-1]) if result else 0
-
-        return updated
 
     async def record_failure(self, proxy_id: int):
         """Record a validation failure for a proxy.
@@ -287,7 +191,7 @@ class ProxyService:
                 updated_at = $1
             WHERE id = $2
         """
-        await self.db.execute(query, datetime.now(), proxy_id)
+        await db.execute(query, datetime.now(), proxy_id)
 
     async def get_active_proxies(
         self,
@@ -341,7 +245,7 @@ class ProxyService:
         """
         params.append(limit)
 
-        rows = await self.db.fetch(query, *params)
+        rows = await db.fetch(query, *params)
         for row in rows:
             yield self._row_to_proxy(row)
 
@@ -370,7 +274,7 @@ class ProxyService:
             LIMIT $1
         """
 
-        rows = await self.db.fetch(query, limit)
+        rows = await db.fetch(query, limit)
         for row in rows:
             yield self._row_to_proxy(row)
 
@@ -398,7 +302,7 @@ class ProxyService:
             LIMIT $1
         """
 
-        rows = await self.db.fetch(query, limit)
+        rows = await db.fetch(query, limit)
         for row in rows:
             yield self._row_to_proxy(row)
 
@@ -417,7 +321,7 @@ class ProxyService:
             DELETE FROM proxies
             WHERE status = {ProxyStatus.FAILED.value} AND fail_count >= $1
         """
-        result = await self.db.execute(query, max_failures)
+        result = await db.execute(query, max_failures)
         return int(result.split()[-1])
 
     async def cleanup_stale_proxies(self, days: int = 7) -> int:
@@ -436,7 +340,7 @@ class ProxyService:
             DELETE FROM proxies
             WHERE last_success < $1 OR (last_success IS NULL AND created_at < $1)
         """
-        result = await self.db.execute(query, cutoff_date)
+        result = await db.execute(query, cutoff_date)
         return int(result.split()[-1])
 
     async def get_all_proxies_for_backup(self, batch_size: int = 1000):
@@ -460,7 +364,7 @@ class ProxyService:
                 ORDER BY id 
                 LIMIT $1 OFFSET $2
             """
-            rows = await self.db.fetch(query, batch_size, offset)
+            rows = await db.fetch(query, batch_size, offset)
 
             if not rows:
                 break
@@ -495,7 +399,7 @@ class ProxyService:
                 COUNT(*) FILTER (WHERE anonymity = 'elite') as elite
             FROM proxies
         """
-        row = await self.db.fetchrow(query)
+        row = await db.fetchrow(query)
 
         return {
             "total": row["total"],
@@ -534,7 +438,7 @@ class ProxyService:
                 AND status = {int(ProxyStatus.SUCCESS)}
             LIMIT $1
         """
-        rows = await self.db.fetch(query, limit)
+        rows = await db.fetch(query, limit)
         return [{"id": row["id"], "ip": row["ip"]} for row in rows]
 
     async def update_proxy_country(self, proxy_id: int, country_code: str) -> None:
@@ -551,7 +455,7 @@ class ProxyService:
             SET country = $1, updated_at = NOW()
             WHERE id = $2
         """
-        await self.db.execute(query, country_code, proxy_id)
+        await db.execute(query, country_code, proxy_id)
 
     async def batch_update_countries(self, updates: List[Tuple[int, str]]) -> int:
         """Batch update proxy country information.
@@ -582,7 +486,7 @@ class ProxyService:
             WHERE proxies.id = data.id
         """
 
-        result = await self.db.execute(query, ids, countries)
+        result = await db.execute(query, ids, countries)
         return int(result.split()[-1]) if result else 0
 
 

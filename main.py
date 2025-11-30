@@ -16,7 +16,6 @@ from sanic.log import LOGGING_CONFIG_DEFAULTS
 # Local imports
 from scylla import logger, root_logger, c, __version__ as VERSION
 from scylla.core.config import settings
-from scylla.core.database import db
 from scylla.core.scheduler import scheduler
 from scylla.api.routes import api_bp
 
@@ -29,7 +28,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 log_config = LOGGING_CONFIG_DEFAULTS.copy()
 log_config["formatters"]["access"]["class"] = "sanic.logging.formatter.AutoFormatter"
 log_config["formatters"]["access"]["format"] = settings.log_format
-log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+log_config["formatters"]["access"]["datefmt"] = "%H:%M:%S"
 
 # Create Sanic application
 app = Sanic("scylla", log_config=log_config)
@@ -71,38 +70,25 @@ async def version(request: Request):
 
 
 @app.before_server_start
-async def setup_db(app: Sanic, _loop) -> None:
-    """Initialize database connection and dependent services.
+async def initialize_scheduler(app: Sanic, _loop) -> None:
+    """Initialize scheduler resources before server starts.
 
     This hook runs before the server starts accepting connections.
-    It establishes the database connection pool and initializes all
-    services that depend on the database.
+    It initializes database, Redis, and sets up all scheduled tasks.
 
     Args:
         app: Sanic application instance
         loop: Event loop (unused, required by Sanic)
     """
-    root_logger.debug(f"{c.CYAN}Connecting to database...{c.END}")
+    root_logger.debug(f"{c.CYAN}Initializing scheduler...{c.END}")
     try:
-        await db.connect()
-        app.ctx.db = db
-        root_logger.debug(f"{c.GREEN}✓{c.END} Database connected successfully")
-
-        # Initialize services that depend on database
-        from scylla.services.proxy_service import proxy_service
-
-        proxy_service._initialize_db(db)
+        await scheduler.initialize()
+        root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler initialized successfully")
     except Exception as e:
-        logger.error(f"{c.RED}✗{c.END} Database connection failed: {e}", exc_info=True)
-        raise  # Prevent application from starting with failed database
-
-
-@app.main_process_start
-async def main_process_start(app):
-    from multiprocessing import Lock, Queue
-
-    app.shared_ctx.lock = Lock()
-    app.shared_ctx.queue = Queue()
+        logger.error(
+            f"{c.RED}✗{c.END} Scheduler initialization failed: {e}", exc_info=True
+        )
+        raise
 
 
 @app.after_server_start
@@ -110,20 +96,18 @@ async def start_scheduler(app: Sanic, _loop) -> None:
     """Start the task scheduler after server is ready.
 
     This hook runs after the server has started and is ready to accept
-    connections. It initializes and starts the background task scheduler.
+    connections. It begins executing the background scheduled tasks.
 
     Args:
         app: Sanic application instance
         loop: Event loop (unused, required by Sanic)
     """
-    root_logger.debug(f"{c.CYAN}Starting scheduler...{c.END}")
+    root_logger.debug(f"{c.CYAN}Starting scheduler execution...{c.END}")
     try:
-
-        scheduler._initialize_tasks(app)
         app.add_task(scheduler.start())
-        root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler started successfully")
+        root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler execution started successfully")
     except Exception as e:
-        logger.error(f"{c.RED}✗{c.END} Scheduler startup failed: {e}", exc_info=True)
+        logger.error(f"{c.RED}✗{c.END} Scheduler execution failed: {e}", exc_info=True)
 
 
 @app.before_server_stop
@@ -138,11 +122,6 @@ async def server_stop(app: Sanic, _loop) -> None:
         loop: Event loop (unused, required by Sanic)
     """
     await scheduler.stop()
-    root_logger.debug(f"{c.GREEN}✓{c.END} Scheduler stopped")
-
-    if app.ctx.db:
-        await app.ctx.db.close()
-        root_logger.debug(f"{c.GREEN}✓{c.END} Database connection closed")
 
 
 @app.exception(Exception)

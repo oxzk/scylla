@@ -7,7 +7,7 @@ protocols using curl_cffi for better compatibility and performance.
 # Standard library imports
 import asyncio
 import time
-from typing import Tuple, Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any
 
 # Third-party imports
 from curl_cffi import AsyncSession
@@ -16,9 +16,7 @@ from curl_cffi import AsyncSession
 from scylla import logger, c
 from scylla.core.config import settings
 from scylla.models import Proxy
-
-# Type alias for validation result
-ValidationResult = Tuple[int, bool, Optional[float], Optional[str]]
+from scylla.services.proxy_service import proxy_service
 
 
 class ValidatorService:
@@ -76,8 +74,8 @@ class ValidatorService:
         session: AsyncSession,
         proxy: Proxy,
         task_name: str = "",
-    ) -> ValidationResult:
-        """Validate a single proxy using provided session.
+    ) -> bool:
+        """Validate a single proxy and update database immediately.
 
         Args:
             session: AsyncSession to use for the request
@@ -85,14 +83,19 @@ class ValidatorService:
             task_name: Optional task name for logging context
 
         Returns:
-            Tuple of (proxy_id, success, response_time, anonymity)
+            True if validation succeeded, False otherwise
         """
+
         if not proxy.id:
-            return (0, False, None, None)
+            return False
 
         url = self.test_url
         start_time = time.time()
         task_prefix = f"[{task_name}] " if task_name else ""
+
+        is_success = False
+        response_time = None
+        anonymity = None
 
         try:
             response = await session.request(
@@ -115,36 +118,45 @@ class ValidatorService:
                     origin = data.get("origin", proxy.ip)
 
                 anonymity = self._detect_anonymity(headers, origin)
+                is_success = True
 
                 logger.info(
                     f"{task_prefix}{c.GREEN}✓{c.END} {proxy.url} - "
                     f"speed: {response_time:.2f}s, anonymity: {c.CYAN}{anonymity}{c.END}"
                 )
-                return (proxy.id, True, response_time, anonymity)
             else:
                 logger.info(
                     f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - status: {response.status_code}"
                 )
-                return (proxy.id, False, None, None)
 
         except asyncio.TimeoutError:
             logger.info(
                 f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - timeout after {self.timeout}s"
             )
-            return (proxy.id, False, None, None)
         except Exception as e:
             logger.info(
                 f"{task_prefix}{c.RED}✗{c.END} {proxy.url} - {type(e).__name__}"
             )
-            return (proxy.id, False, None, None)
+
+        # Update database immediately
+        try:
+            await proxy_service.record_validation_result(
+                proxy.id, is_success, response_time, anonymity
+            )
+        except Exception as e:
+            logger.error(f"Failed to update database for proxy {proxy.id}: {e}")
+            return False
+
+        return is_success
 
     async def validate_batch(
         self, proxies: List[Proxy], task_name: str = ""
     ) -> Dict[str, Any]:
-        """Batch validate proxies with concurrent execution.
+        """Batch validate proxies with concurrent execution and immediate database updates.
 
         Creates a dedicated session for this batch to avoid multi-worker conflicts.
         Uses semaphore to control concurrency and prevent resource exhaustion.
+        Database updates happen immediately within each validation.
 
         Args:
             proxies: List of proxies to validate
@@ -155,40 +167,37 @@ class ValidatorService:
                 - total: Total number of proxies validated
                 - success: Number of successful validations
                 - failed: Number of failed validations
-                - results: List of (proxy_id, success, speed, anonymity) tuples
         """
         if not proxies:
-            return {"total": 0, "success": 0, "failed": 0, "results": []}
+            return {"total": 0, "success": 0, "failed": 0}
 
         semaphore = asyncio.Semaphore(self.max_concurrent)
+        success_count = 0
+        failed_count = 0
 
-        async def validate_with_semaphore(
-            session: AsyncSession, proxy: Proxy
-        ) -> ValidationResult:
+        async def validate_with_semaphore(session: AsyncSession, proxy: Proxy) -> bool:
             async with semaphore:
                 return await self._validate_single(session, proxy, task_name)
 
         # Use dedicated session for this batch
         async with AsyncSession() as session:
-            results = await asyncio.gather(
-                *[validate_with_semaphore(session, proxy) for proxy in proxies],
-                return_exceptions=True,
-            )
+            # Create all validation tasks
+            tasks = [
+                asyncio.create_task(validate_with_semaphore(session, proxy))
+                for proxy in proxies
+            ]
 
-        # Process results
-        success_count = 0
-        failed_count = 0
-        validation_results: List[ValidationResult] = []
+            # Wait for all tasks to complete and collect results
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result in results:
-            if isinstance(result, Exception):
-                failed_count += 1
-                logger.error(f"Validation exception: {type(result).__name__}")
-                continue
-
-            if isinstance(result, tuple) and len(result) == 4:
-                validation_results.append(result)
-                if result[1]:  # is_success
+            # Count statistics after all tasks complete
+            for result in results:
+                if isinstance(result, Exception):
+                    failed_count += 1
+                    logger.error(
+                        f"Validation exception: {type(result).__name__}: {result}"
+                    )
+                elif result:
                     success_count += 1
                 else:
                     failed_count += 1
@@ -197,7 +206,6 @@ class ValidatorService:
             "total": len(proxies),
             "success": success_count,
             "failed": failed_count,
-            "results": validation_results,
         }
 
 

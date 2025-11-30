@@ -11,9 +11,10 @@ import logging
 # Local imports
 from scylla.core.database import db
 from scylla.tasks import validate_pending_task
+from scylla.core.config import settings
+from scylla.services.proxy_service import proxy_service
 
-
-# Configure logging
+# Configure loggin
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -30,16 +31,14 @@ async def main():
     """Main CLI entry point - executes validate_pending_task."""
     logger.info("Starting Scylla CLI - Validate Pending Task")
 
+    settings.db_min_pool_size = 1
+    settings.db_max_pool_size = 2
+
     try:
         # Initialize database connection
         logger.info("Connecting to database...")
         await db.connect()
         logger.info("✓ Database connected successfully")
-
-        # Initialize proxy service with database
-        from scylla.services.proxy_service import proxy_service
-
-        proxy_service._initialize_db(db)
 
         # Execute validation task
         logger.info("Running validate_pending_task...")
@@ -51,9 +50,8 @@ async def main():
         raise
     finally:
         # Clean up database connection
-        if db:
-            await db.close()
-            logger.debug("✓ Database connection closed")
+        await db.close()
+        logger.debug("✓ Database connection closed")
 
 
 if __name__ == "__main__":

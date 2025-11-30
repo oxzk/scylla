@@ -4,6 +4,7 @@ Provides Redis connection and operations for task scheduling.
 """
 
 # Standard library imports
+import asyncio
 from typing import Optional, Dict, Any
 from datetime import datetime
 
