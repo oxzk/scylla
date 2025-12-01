@@ -100,44 +100,6 @@ class Proxy(BaseModel):
         """Generate proxy URL in format: protocol://ip:port"""
         return f"{self.protocol}://{self.ip}:{self.port}"
 
-    @property
-    def quality_score(self) -> float:
-        """Calculate overall proxy quality score (0-100)
-
-        Combines success rate, speed, and stability into a weighted score.
-        Higher scores indicate better quality proxies.
-        """
-        from scylla.core.config import settings
-
-        # Success rate score (0-100)
-        success_score = self.success_rate * 100
-
-        # Speed score (faster = higher score, 1 second = 100 points)
-        if self.speed:
-            speed_score = max(0, 100 - (self.speed * 10))
-        else:
-            speed_score = 0
-
-        # Stability score (based on time since last success)
-        if self.last_success:
-            hours_since_success = (
-                datetime.now(timezone.utc) - self.last_success
-            ).total_seconds() / 3600
-            stability_score = max(0, 100 - (hours_since_success * 5))
-        else:
-            stability_score = 0
-
-        # Weighted calculation
-        w_success = settings.weight_success_rate
-        w_speed = settings.weight_speed
-        w_stability = settings.weight_stability
-
-        return (
-            success_score * w_success
-            + speed_score * w_speed
-            + stability_score * w_stability
-        )
-
     def to_dict(self) -> dict:
         """Convert proxy model to dictionary for JSON serialization"""
         return {
@@ -152,7 +114,6 @@ class Proxy(BaseModel):
             "success_count": self.success_count,
             "fail_count": self.fail_count,
             "success_rate": round(self.success_rate, 2),
-            "quality_score": round(self.quality_score, 2),
             "url": self.url,
             "last_checked": (
                 self.last_checked.isoformat() if self.last_checked else None
@@ -166,4 +127,3 @@ class Proxy(BaseModel):
     class Config:
         use_enum_values = True
         from_attributes = True
-

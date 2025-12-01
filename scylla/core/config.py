@@ -45,15 +45,6 @@ class Settings(BaseSettings):
         default=600, ge=1, description="Country update interval in seconds"
     )
 
-    # Scoring weights (must sum to 1.0)
-    weight_success_rate: float = Field(
-        default=0.4, ge=0.0, le=1.0, description="Success rate weight"
-    )
-    weight_speed: float = Field(default=0.3, ge=0.0, le=1.0, description="Speed weight")
-    weight_stability: float = Field(
-        default=0.3, ge=0.0, le=1.0, description="Stability weight"
-    )
-
     # Limits
     max_fail_count: int = Field(
         default=3, ge=1, description="Maximum failure count before removing proxy"
@@ -69,13 +60,11 @@ class Settings(BaseSettings):
     max_concurrent_validators: int = Field(
         default=50, ge=1, description="Maximum concurrent validator tasks"
     )
-
-    # Proxy testing
-    proxy_test_url: str = Field(
-        default="https://httpbin.org/get", description="URL for testing proxies"
+    validator_timeout: int = Field(
+        default=25, ge=1, description="Proxy validation timeout in seconds"
     )
-    proxy_test_timeout: int = Field(
-        default=25, ge=1, description="Proxy test timeout in seconds"
+    validator_test_url: str = Field(
+        default="https://httpbin.org/get", description="URL used for proxy validation"
     )
 
     # Logging format
@@ -96,20 +85,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"db_max_pool_size ({self.db_max_pool_size}) must be >= "
                 f"db_min_pool_size ({self.db_min_pool_size})"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_weights(self) -> "Settings":
-        """Validate that scoring weights sum to approximately 1.0."""
-        weight_sum = (
-            self.weight_success_rate + self.weight_speed + self.weight_stability
-        )
-        if not (0.99 <= weight_sum <= 1.01):  # Allow small floating point errors
-            raise ValueError(
-                f"Scoring weights must sum to 1.0, got {weight_sum:.4f} "
-                f"(success_rate={self.weight_success_rate}, speed={self.weight_speed}, "
-                f"stability={self.weight_stability})"
             )
         return self
 

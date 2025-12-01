@@ -46,8 +46,8 @@ class ValidatorService:
 
     def __init__(self):
         """Initialize validator with configuration from settings."""
-        self.test_url = settings.proxy_test_url
-        self.timeout = settings.proxy_test_timeout
+        self.test_url = settings.validator_test_url
+        self.timeout = settings.validator_timeout
         self.max_concurrent = settings.max_concurrent_validators
 
     def _detect_anonymity(self, headers: dict, proxy_ip: str) -> str:
