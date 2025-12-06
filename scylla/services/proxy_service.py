@@ -239,8 +239,8 @@ class ProxyService:
             FROM proxies
             WHERE {where_clause}
             ORDER BY 
-                success_count DESC,
-                last_success DESC
+                last_success DESC,
+                success_count DESC
             LIMIT ${param_index}
         """
         params.append(limit)

@@ -53,20 +53,7 @@ async def robot_file(request: Request):
 
 @app.get("/version", name="version")
 async def version(request: Request):
-    return json_response(
-        {
-            "name": app.name,
-            "version": VERSION,
-            "message": f"{app.name} Proxy Pool API - Supports HTTP/HTTPS/SOCKS4/SOCKS5",
-            "documentation": {
-                "proxies": {
-                    "list": "GET /api/proxies?protocol=http&country=US&limit=10",
-                },
-                "stats": "GET /api/stats",
-                "health": "GET /api/health",
-            },
-        }
-    )
+    return json_response({"version": VERSION})
 
 
 @app.before_server_start
