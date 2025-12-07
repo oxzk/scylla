@@ -11,6 +11,10 @@ main:
           env:
             VALIDATE_BATCH_LIMIT: 300
           script: |
+            if ! [ -L ".venv" ]; then
+              ln -s /root/.venv /workspace
+            fi
+            . .venv/bin/activate
             uv pip install -r requirements.txt
             uv run cli.py
 
