@@ -95,6 +95,11 @@ class ValidatorService:
         if not proxy.id:
             return (0, False, None, None)
 
+        # Use country-specific test URL for CN proxies
+        test_url = self.test_url
+        if proxy.country and proxy.country.upper() == "CN":
+            test_url = "http://connect.rom.miui.com/generate_204"
+
         start_time = time.time()
         success = False
         response_time = None
@@ -103,7 +108,7 @@ class ValidatorService:
         try:
             response = await session.request(
                 method="GET",
-                url=self.test_url,
+                url=test_url,
                 proxy=proxy.url,
                 timeout=self.timeout,
                 verify=False,
@@ -113,15 +118,8 @@ class ValidatorService:
             if response.ok:
                 response_time = time.time() - start_time
                 headers = dict(response.headers)
-                origin = proxy.ip
 
-                # Extract origin from httpbin response if applicable
-                if self.test_url == "https://httpbin.org/get":
-                    data = response.json()
-                    headers = data.get("headers", {})
-                    origin = data.get("origin", proxy.ip)
-
-                anonymity = self._detect_anonymity(headers, origin)
+                anonymity = self._detect_anonymity(headers, proxy.ip)
                 success = True
 
                 logger.info(

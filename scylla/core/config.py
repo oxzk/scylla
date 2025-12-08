@@ -64,7 +64,8 @@ class Settings(BaseSettings):
         default=25, ge=1, description="Proxy validation timeout in seconds"
     )
     validator_test_url: str = Field(
-        default="https://httpbin.org/get", description="URL used for proxy validation"
+        default="http://cp.cloudflare.com/generate_204",
+        description="URL used for proxy validation",
     )
 
     # Logging format
