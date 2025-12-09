@@ -6,6 +6,7 @@ protocols using curl_cffi for better compatibility and performance.
 
 # Standard library imports
 import asyncio
+import random
 import time
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -46,7 +47,7 @@ class ValidatorService:
 
     def __init__(self):
         """Initialize validator with configuration from settings."""
-        self.test_url = settings.validator_test_url
+        self.test_urls = settings.validator_test_urls
         self.timeout = settings.validator_timeout
         self.max_concurrent = settings.max_concurrent_validators
 
@@ -96,9 +97,11 @@ class ValidatorService:
             return (0, False, None, None)
 
         # Use country-specific test URL for CN proxies
-        test_url = self.test_url
         if proxy.country and proxy.country.upper() == "CN":
             test_url = "http://connect.rom.miui.com/generate_204"
+        else:
+            # Randomly select a test URL from the configured list
+            test_url = random.choice(self.test_urls)
 
         start_time = time.time()
         success = False

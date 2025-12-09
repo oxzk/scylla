@@ -1,3 +1,4 @@
+from typing import List
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -63,9 +64,9 @@ class Settings(BaseSettings):
     validator_timeout: int = Field(
         default=25, ge=1, description="Proxy validation timeout in seconds"
     )
-    validator_test_url: str = Field(
-        default="https://api.ip.sb/geoip",
-        description="URL used for proxy validation",
+    validator_test_urls: List[str] = Field(
+        default=["https://api.ip.sb/ip", "https://api.ipify.org/"],
+        description="URLs used for proxy validation (randomly selected)",
     )
 
     # Logging format
