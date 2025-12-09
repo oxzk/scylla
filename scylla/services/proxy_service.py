@@ -158,7 +158,7 @@ class ProxyService:
             UPDATE proxies 
             SET 
                 success_count = CASE WHEN $2 THEN success_count + 1 ELSE 0 END,
-                fail_count = CASE WHEN $2 THEN fail_count - 1 ELSE fail_count + 1 END,
+                fail_count = CASE WHEN $2 THEN GREATEST(fail_count - 1, 0) ELSE fail_count + 1 END,
                 last_checked = NOW(),
                 last_success = CASE WHEN $2 THEN NOW() ELSE last_success END,
                 speed = CASE WHEN $2 THEN $3 ELSE speed END,
